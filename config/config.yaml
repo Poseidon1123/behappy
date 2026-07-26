@@ -33,5 +33,12 @@ backtest:
   slippage_points: 2.0
   commission_per_lot_round_turn: 0.0
 
+walk_forward:
+  bars: 30000
+  train_bars: 12000
+  test_bars: 2000
+  step_bars: 2000
+  purge_bars: 8
+
 application:
   log_level: "INFO"

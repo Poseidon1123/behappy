@@ -18,6 +18,13 @@ def load_config(path: str = "config/config.yaml") -> dict:
         return yaml.safe_load(f) or {}
 
 
+def _records(df):
+    """Return JSON-safe Python records from a DataFrame."""
+    if df.empty:
+        return []
+    return json.loads(df.to_json(orient="records"))
+
+
 def main() -> None:
     cfg = load_config()
     trading = cfg.get("trading", {})
@@ -93,19 +100,17 @@ def main() -> None:
 
     analysis_summary = {
         "baseline": summary,
-        "side_summary": side_summary.to_dict(orient="records"),
+        "side_summary": _records(side_summary),
         "best_threshold_by_profit_factor": None,
         "best_threshold_by_net_profit": None,
     }
     valid_pf = sweep.dropna(subset=["profit_factor"])
     if not valid_pf.empty:
-        analysis_summary["best_threshold_by_profit_factor"] = valid_pf.loc[
-            valid_pf["profit_factor"].idxmax()
-        ].to_dict()
+        best_pf = valid_pf.loc[[valid_pf["profit_factor"].idxmax()]]
+        analysis_summary["best_threshold_by_profit_factor"] = _records(best_pf)[0]
     if not sweep.empty:
-        analysis_summary["best_threshold_by_net_profit"] = sweep.loc[
-            sweep["net_profit"].idxmax()
-        ].to_dict()
+        best_profit = sweep.loc[[sweep["net_profit"].idxmax()]]
+        analysis_summary["best_threshold_by_net_profit"] = _records(best_profit)[0]
 
     with (report_dir / "walk_forward_summary.json").open("w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)

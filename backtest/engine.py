@@ -7,7 +7,12 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from data.feature_engineering import FEATURE_COLUMNS, build_features
+from data.feature_engineering import (
+    BUY_FEATURE_COLUMNS,
+    FEATURE_COLUMNS,
+    SELL_FEATURE_COLUMNS,
+    build_features,
+)
 
 
 @dataclass(frozen=True)
@@ -62,7 +67,6 @@ def _validate_config(cfg: BacktestConfig) -> None:
 def _decision(buy: float, sell: float, cfg: BacktestConfig) -> str:
     buy_ok = buy >= cfg.buy_threshold
     sell_ok = sell >= cfg.sell_threshold
-
     if buy_ok and not sell_ok:
         return "BUY"
     if sell_ok and not buy_ok:
@@ -84,13 +88,6 @@ def _simulate_trade(
     cfg: BacktestConfig,
     balance: float,
 ) -> tuple[TradeRecord, int]:
-    """Enter at the next bar open and scan forward for first TP/SL touch.
-
-    MT5 OHLC bars are commonly bid-based. Backtester v1 therefore treats the
-    observed spread as an explicit round-trip transaction cost rather than
-    pretending bid/ask OHLC are both available. If TP and SL are touched in the
-    same bar, the result is conservatively treated as SL.
-    """
     entry_index = signal_index + 1
     entry_row = df.iloc[entry_index]
     entry_price = float(entry_row["open"])
@@ -110,7 +107,6 @@ def _simulate_trade(
         row = df.iloc[j]
         high = float(row["high"])
         low = float(row["low"])
-
         if side == "BUY":
             hit_tp = high >= tp_price
             hit_sl = low <= sl_price
@@ -119,36 +115,26 @@ def _simulate_trade(
             hit_sl = high >= sl_price
 
         if hit_tp and hit_sl:
-            # OHLC cannot reveal intrabar ordering. Be conservative.
-            exit_index = j
-            exit_price = sl_price
-            exit_reason = "SL_AMBIGUOUS"
+            exit_index, exit_price, exit_reason = j, sl_price, "SL_AMBIGUOUS"
             break
         if hit_tp:
-            exit_index = j
-            exit_price = tp_price
-            exit_reason = "TP"
+            exit_index, exit_price, exit_reason = j, tp_price, "TP"
             break
         if hit_sl:
-            exit_index = j
-            exit_price = sl_price
-            exit_reason = "SL"
+            exit_index, exit_price, exit_reason = j, sl_price, "SL"
             break
 
     direction = 1.0 if side == "BUY" else -1.0
     price_move = (exit_price - entry_price) * direction
     gross_pnl = price_move * cfg.contract_size * cfg.fixed_lot
-
     spread_points = float(entry_row.get("spread", 0.0))
     spread_cost = spread_points * cfg.point * cfg.contract_size * cfg.fixed_lot
-    slippage_cost = (
-        2.0 * cfg.slippage_points * cfg.point * cfg.contract_size * cfg.fixed_lot
-    )
+    slippage_cost = 2.0 * cfg.slippage_points * cfg.point * cfg.contract_size * cfg.fixed_lot
     commission_cost = cfg.commission_per_lot_round_turn * cfg.fixed_lot
     net_pnl = gross_pnl - spread_cost - slippage_cost - commission_cost
     balance_after = balance + net_pnl
 
-    trade = TradeRecord(
+    return TradeRecord(
         signal_time=str(df.iloc[signal_index]["time"]),
         entry_time=str(entry_row["time"]),
         exit_time=str(df.iloc[exit_index]["time"]),
@@ -165,8 +151,7 @@ def _simulate_trade(
         commission_cost=commission_cost,
         net_pnl=net_pnl,
         balance_after=balance_after,
-    )
-    return trade, exit_index
+    ), exit_index
 
 
 def _summary(trades: pd.DataFrame, initial_balance: float) -> dict[str, Any]:
@@ -192,19 +177,11 @@ def _summary(trades: pd.DataFrame, initial_balance: float) -> dict[str, Any]:
     gross_loss = float(-pnl[pnl < 0].sum())
     profit_factor = gross_profit / gross_loss if gross_loss > 0 else None
 
-    equity = pd.concat(
-        [pd.Series([initial_balance]), trades["balance_after"].astype(float)],
-        ignore_index=True,
-    )
+    equity = pd.concat([pd.Series([initial_balance]), trades["balance_after"].astype(float)], ignore_index=True)
     peaks = equity.cummax()
     drawdown = (equity - peaks) / peaks.replace(0, np.nan)
     max_drawdown_pct = float(abs(drawdown.min()) * 100.0)
-
-    total_costs = float(
-        trades[["spread_cost", "slippage_cost", "commission_cost"]]
-        .sum(axis=1)
-        .sum()
-    )
+    total_costs = float(trades[["spread_cost", "slippage_cost", "commission_cost"]].sum(axis=1).sum())
 
     return {
         "initial_balance": initial_balance,
@@ -232,24 +209,20 @@ def run_backtest(
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
     cfg = config or BacktestConfig()
     _validate_config(cfg)
-
-    if len(raw_df) < 200:
-        raise ValueError("Backtest needs at least 200 bars")
+    if len(raw_df) < 300:
+        raise ValueError("Multi-timeframe backtest needs at least 300 M15 bars")
 
     buy_model = joblib.load(buy_model_path)
     sell_model = joblib.load(sell_model_path)
-
     df = build_features(raw_df).reset_index(drop=True)
     valid_mask = df[FEATURE_COLUMNS].notna().all(axis=1)
     valid_indices = np.flatnonzero(valid_mask.to_numpy())
     valid_indices = valid_indices[valid_indices < len(df) - cfg.horizon - 1]
-
     if len(valid_indices) == 0:
-        raise ValueError("No usable feature rows for backtest")
+        raise ValueError("No usable M15+H1 feature rows for backtest")
 
-    x = df.loc[valid_indices, FEATURE_COLUMNS]
-    buy_prob = buy_model.predict_proba(x)[:, 1]
-    sell_prob = sell_model.predict_proba(x)[:, 1]
+    buy_prob = buy_model.predict_proba(df.loc[valid_indices, BUY_FEATURE_COLUMNS])[:, 1]
+    sell_prob = sell_model.predict_proba(df.loc[valid_indices, SELL_FEATURE_COLUMNS])[:, 1]
     probability_by_index = {
         int(idx): (float(b), float(s))
         for idx, b, s in zip(valid_indices, buy_prob, sell_prob)
@@ -259,19 +232,16 @@ def run_backtest(
     balance = cfg.initial_balance
     i = int(valid_indices[0])
     last_signal_index = int(valid_indices[-1])
-
     while i <= last_signal_index:
         probabilities = probability_by_index.get(i)
         if probabilities is None:
             i += 1
             continue
-
         buy, sell = probabilities
         side = _decision(buy, sell, cfg)
         if side == "HOLD":
             i += 1
             continue
-
         trade, exit_index = _simulate_trade(
             df=df,
             signal_index=i,
@@ -283,22 +253,14 @@ def run_backtest(
         )
         trades.append(trade)
         balance = trade.balance_after
-
-        # One open position at a time. The next signal may occur only after exit.
         i = exit_index + 1
 
     trades_df = pd.DataFrame([asdict(t) for t in trades])
-
     if trades_df.empty:
-        equity_df = pd.DataFrame(
-            [{"time": str(df.iloc[valid_indices[0]]["time"]), "equity": cfg.initial_balance}]
-        )
+        equity_df = pd.DataFrame([{"time": str(df.iloc[valid_indices[0]]["time"]), "equity": cfg.initial_balance}])
     else:
-        equity_df = pd.DataFrame(
-            {
-                "time": trades_df["exit_time"],
-                "equity": trades_df["balance_after"],
-            }
-        )
+        equity_df = pd.DataFrame({"time": trades_df["exit_time"], "equity": trades_df["balance_after"]})
 
-    return trades_df, equity_df, _summary(trades_df, cfg.initial_balance)
+    summary = _summary(trades_df, cfg.initial_balance)
+    summary["architecture"] = "multi_timeframe_m15_h1_regime_side_specific_v2"
+    return trades_df, equity_df, summary

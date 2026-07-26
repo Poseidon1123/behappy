@@ -92,39 +92,45 @@ reports/nested_v3_1/inner_split_diagnostics.csv
 reports/nested_v3_1/sell_architecture_selection_counts.csv
 ```
 
-`robust_candidate_scores.csv` is especially useful for checking why a threshold/architecture was selected: it reports mean and standard deviation of PF/expectancy, positive inner-split ratio and the final robust score.
-
-If all candidates are weak, v3.1 still selects the least-bad candidate using inner history only. It never inspects an outer test before deciding to keep or discard that fold.
-
 ### Step 10 - Frozen v3.1 Forward Confirmation
+The v3.1 rule set is frozen in `config/frozen_v3_1.json`. The development cutoff is fixed at `2026-06-25 04:30:00 UTC`. The post-cutoff confirmation window has now been inspected and is therefore consumed.
 
-The v3.1 rule set is frozen in `config/frozen_v3_1.json`. The development cutoff is fixed at:
-
-```text
-2026-06-25 04:30:00 UTC
-```
-
-The forward-confirmation runner only evaluates closed M15 bars strictly after that timestamp. It reconstructs the robust inner selection entirely from pre-confirmation history, keeps an 8-bar purge before the confirmation window, refits the selected BUY/SELL models on the frozen 12,000-bar history and then evaluates the later data exactly once.
-
-There is no threshold sweep, no feature ablation and no optimizer in this runner.
-
-Run:
+Run for reproducibility only:
 ```bash
 python run_forward_confirmation.py
 ```
 
-Outputs:
-```text
-reports/forward_confirmation_v3_1/summary.json
-reports/forward_confirmation_v3_1/trades.csv
-reports/forward_confirmation_v3_1/predictions.csv
-reports/forward_confirmation_v3_1/side_summary.csv
-reports/forward_confirmation_v3_1/frozen_inner_candidate_scores.csv
-reports/forward_confirmation_v3_1/frozen_inner_split_diagnostics.csv
-reports/forward_confirmation_v3_1/freeze_manifest_snapshot.json
+### Step 11 - v4 Meta-Labeling / Trade Gate
+v4 keeps the primary BUY/SELL opportunity models, but adds a second AI layer that decides whether a candidate should actually be traded or skipped.
+
+The meta gate uses:
+- primary-side probability,
+- opposing probability,
+- probability gap and excess over the primary threshold,
+- M15 momentum/volatility/RSI/candle context,
+- spread-relative information,
+- H1 context,
+- market-regime features.
+
+To prevent leakage, meta models are trained only from **out-of-fold primary probabilities** generated inside each outer-training history. The outer test is never used to train the primary model or the meta gate.
+
+The first v4 baseline deliberately fixes the meta gate threshold at `0.55`; it does not tune that number on outer-test results. Each outer fold compares the same primary strategy with and without the gate.
+
+Run:
+```bash
+python run_meta_labeling.py
 ```
 
-The SHA-256 hash of the freeze manifest is printed and stored with the report. Once the confirmation result has been inspected, that post-cutoff window is considered consumed and must not be used to tune v3.1 while still calling it forward confirmation.
+Outputs:
+```text
+reports/meta_labeling_v4/summary.json
+reports/meta_labeling_v4/baseline_trades.csv
+reports/meta_labeling_v4/gated_trades.csv
+reports/meta_labeling_v4/fold_comparison.csv
+reports/meta_labeling_v4/meta_training_samples.csv
+```
+
+The important comparison is whether the gate reduces trades while improving Profit Factor and expectancy on the same outer folds. The already-consumed 2024 holdout and June-July 2026 forward-confirmation period must not be reused as clean holdouts for v4.
 
 ## Install
 ```bash
@@ -143,11 +149,12 @@ python run_feature_ablation.py
 python run_nested_walk_forward.py
 python run_nested_robust.py
 python run_forward_confirmation.py
+python run_meta_labeling.py
 python main.py
 ```
 
 ## Validation policy
-Ordinary walk-forward and feature ablation are development/model-selection analyses. Nested v3 and robust v3.1 provide stronger outer-test estimates because selections occur only inside historical training data. Frozen forward confirmation is a stricter post-development check, but once its result is inspected that time window is consumed too.
+Ordinary walk-forward and feature ablation are development/model-selection analyses. Nested v3/v3.1 and v4 meta-labeling use stricter outer-test separation, but a genuinely new untouched period is still required after a final v4 rule set is frozen. Previously inspected holdouts remain consumed.
 
 ## Safety
-The project remains read-only. Monitoring does not send, modify or close orders. Live execution should only be added after a stable nested result, forward confirmation and dedicated demo-tested risk controls.
+The project remains read-only. Monitoring does not send, modify or close orders. Live execution should only be added after a stable nested result, a new untouched confirmation period and dedicated demo-tested risk controls.

@@ -1,5 +1,6 @@
 MetaTrader5
 pandas
+numpy
 PyYAML
 python-dotenv
 PySide6

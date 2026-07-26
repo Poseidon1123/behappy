@@ -81,10 +81,5 @@ walk_forward:
 
   calibration_bins: 10
 
-feature_ablation:
-  # Uses the same chronological windows as walk_forward by default.
-  # The runner evaluates all five hard-coded feature groups on identical folds.
-  enabled: true
-
 application:
   log_level: "INFO"

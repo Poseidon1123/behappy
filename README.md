@@ -49,12 +49,59 @@ Python foundation for an AI-assisted MetaTrader 5 trading system.
 - Retrains a fresh BUY/SELL model pair in every fold.
 - Each test fold is strictly future/out-of-sample relative to its fitting and calibration windows.
 - Uses two purge gaps: one between model fitting and calibration, and another between calibration and test.
-- Fits Sigmoid (Platt-style) and Isotonic calibration only on historical calibration bars.
+- Fits Sigmoid and Isotonic calibration only on historical calibration bars.
 - Exports raw, sigmoid and isotonic BUY/SELL probabilities for the identical future test rows.
-- Runs the same threshold sweep for all three probability streams.
+- Runs separate threshold ranges for raw vs calibrated probabilities.
 - Reports BUY/SELL performance separately.
-- Reports Brier Score and Expected Calibration Error (ECE); lower is better.
-- Builds calibration bins comparing predicted probability with realized TP-before-SL frequency.
+- Reports Brier Score and Expected Calibration Error (ECE).
+- Adds cost-adjusted break-even probability and calibrated edge-margin analysis.
+
+### Step 6 - Final Untouched Holdout Test
+
+The final holdout test is deliberately isolated from development tuning.
+
+Locked candidates are hard-coded in `backtest/holdout.py`:
+
+```text
+raw 0.55
+raw 0.60
+raw 0.80
+sigmoid 0.20
+```
+
+No threshold sweep or optimizer is allowed inside the final holdout runner.
+
+Because the most recent 30,000-50,000 bars were already used during development, the final holdout runner does **not** reuse them. By default it downloads 75,000 bars, excludes the newest 50,000 completely, then constructs one older virgin chronological block:
+
+```text
+12,000 model-fit bars
+-> 8 purge bars
+-> 2,000 calibration bars
+-> 8 purge bars
+-> 5,000 FINAL HOLDOUT bars
+-> newest 50,000 development bars excluded entirely
+```
+
+Run it once when you are ready to consume that holdout:
+
+```bash
+python run_final_holdout.py
+```
+
+Outputs:
+
+```text
+reports/final_holdout/manifest.json
+reports/final_holdout/predictions.csv
+reports/final_holdout/candidate_results.csv
+reports/final_holdout/candidate_side_results.csv
+reports/final_holdout/trades_raw_055.csv
+reports/final_holdout/trades_raw_060.csv
+reports/final_holdout/trades_raw_080.csv
+reports/final_holdout/trades_sigmoid_020.csv
+```
+
+`manifest.json` stores the exact train/calibration/holdout timestamps, frozen candidate definitions, trading-cost assumptions and a SHA-256 lock hash. Once this holdout has been run and inspected, treat it as consumed: do not retune the model or thresholds against it and still call it final/untouched.
 
 ## Requirements
 
@@ -76,102 +123,23 @@ Edit `config/config.yaml` so `trading.symbol` exactly matches the broker symbol 
 
 ## Train the AI
 
-Open MetaTrader 5, then run:
-
 ```bash
 python train_ai.py
 ```
 
-The trainer downloads closed M15 bars, builds features/labels, applies the purged chronological split, trains the two models and saves local model/report artifacts.
-
 ## Run Backtester v1
-
-Train the models first, then run:
 
 ```bash
 python run_backtest.py
 ```
 
-Default settings are under `backtest:` in `config/config.yaml`. Set `commission_per_lot_round_turn` to your broker's actual round-trip commission per 1.00 lot. Historical spread is taken from MT5; symbol point size and contract size are read from the broker specification.
-
-Backtest output:
-
-```text
-reports/backtest_trades.csv
-reports/backtest_equity.csv
-reports/backtest_summary.json
-```
-
 ## Run calibrated Walk-Forward Backtest
-
-Run:
 
 ```bash
 python run_walk_forward.py
 ```
 
-Default settings:
-
-```yaml
-walk_forward:
-  bars: 30000
-  train_bars: 12000
-  calibration_bars: 2000
-  test_bars: 2000
-  step_bars: 2000
-  purge_bars: 8
-  baseline_calibration_method: "raw"
-  threshold_sweep:
-    - 0.50
-    - 0.55
-    - 0.60
-    - 0.65
-    - 0.70
-    - 0.72
-    - 0.75
-    - 0.80
-    - 0.85
-    - 0.90
-  calibration_bins: 10
-```
-
-With M15 data, each fold follows this leakage-safe order:
-
-```text
-12,000 model-fit bars
--> 8 purge bars
--> 2,000 calibration bars
--> 8 purge bars
--> 2,000 future test bars
-```
-
-The rolling window then advances by `step_bars` and repeats. The calibration samples are earlier than the test samples and are never reused as future test data for the same fold.
-
-Outputs:
-
-```text
-reports/walk_forward_trades.csv
-reports/walk_forward_equity.csv
-reports/walk_forward_folds.csv
-reports/walk_forward_predictions.csv
-reports/walk_forward_side_summary.csv
-reports/walk_forward_threshold_sweep.csv
-reports/walk_forward_calibration.csv
-reports/walk_forward_calibration_metrics.csv
-reports/walk_forward_calibration_best.csv
-reports/walk_forward_summary.json
-reports/walk_forward_analysis.json
-```
-
-`walk_forward_predictions.csv` contains raw, sigmoid and isotonic probabilities for the same OOS test rows.
-
-`walk_forward_threshold_sweep.csv` compares trade count, win rate, profit factor, net P/L, expectancy, max drawdown, BUY P/L and SELL P/L for every calibration method at every configured threshold.
-
-`walk_forward_calibration_metrics.csv` compares Brier Score and ECE for raw, sigmoid and isotonic probability streams separately for BUY and SELL. Lower values mean the reported probabilities better match realized frequencies.
-
-`walk_forward_calibration.csv` provides probability-bin diagnostics for all three methods.
-
-`walk_forward_calibration_best.csv` reports the best tested threshold by Profit Factor and by Net Profit for each method. These are diagnostic/model-selection results only; any selected method/threshold must be confirmed on a later untouched period before deployment.
+The walk-forward reports are saved under `reports/walk_forward_*.csv/json` and include raw/calibrated probabilities, threshold sweeps, calibration quality and cost-adjusted edge analysis.
 
 ## Run the HMI
 
@@ -183,8 +151,8 @@ After training, the header should show `AI MODEL READY`. If the HMI was already 
 
 ## Important validation note
 
-Backtester v1 can be partly in-sample if its data overlaps model training. The calibrated walk-forward test is preferred because model fitting, probability calibration and final testing occur in chronological order with purge gaps. A profitable result still does not prove future profitability; inspect fold-to-fold stability, costs, drawdown, trade count, calibration quality and demo performance before enabling order execution.
+Backtester v1 can be partly in-sample if its data overlaps model training. Walk-forward validation is the main development test. The final untouched holdout is a one-time confirmation test for pre-registered candidates; it should not become another optimization dataset after results are seen.
 
 ## Safety
 
-The project is still read-only. The monitoring button does not send, modify or close orders. Live order execution should only be added after walk-forward validation, probability calibration and risk controls have been validated on demo data.
+The project is still read-only. The monitoring button does not send, modify or close orders. Live order execution should only be added after validation and dedicated risk controls have been verified on demo data.

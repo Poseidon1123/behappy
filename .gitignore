@@ -12,3 +12,4 @@ logs/*.log
 training_data/*.csv
 models/*.joblib
 reports/*.json
+reports/*.csv

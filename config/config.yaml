@@ -69,8 +69,6 @@ walk_forward:
     - 0.525
     - 0.55
 
-  # Trade calibrated probabilities when p >= dynamic break-even + margin.
-  # Dynamic break-even includes historical spread, configured slippage and commission.
   calibrated_edge_margin_sweep:
     - 0.00
     - 0.01
@@ -83,20 +81,10 @@ walk_forward:
 
   calibration_bins: 10
 
-final_holdout:
-  # The most recent 50,000 bars are deliberately excluded because they were
-  # already used during model/threshold development. The test runner downloads
-  # deeper history and builds one older, temporally valid virgin holdout block.
-  bars: 75000
-  recent_bars_excluded: 50000
-  train_bars: 12000
-  calibration_bars: 2000
-  holdout_bars: 5000
-  purge_bars: 8
-
-  # Candidates are intentionally NOT configurable here. They are hard-coded and
-  # pre-registered in backtest/holdout.py to prevent accidental optimization:
-  # raw 0.55, raw 0.60, raw 0.80, sigmoid 0.20.
+feature_ablation:
+  # Uses the same chronological windows as walk_forward by default.
+  # The runner evaluates all five hard-coded feature groups on identical folds.
+  enabled: true
 
 application:
   log_level: "INFO"

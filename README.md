@@ -44,14 +44,16 @@ Python foundation for an AI-assisted MetaTrader 5 trading system.
 - Uses MT5 `point` and `trade_contract_size` for P/L and transaction-cost calculations.
 - Produces trade log, equity curve and summary statistics.
 
-### Step 5 - Walk-Forward Backtest
+### Step 5 - Walk-Forward validation and probability analysis
 
-- Retrains fresh BUY/SELL models on each historical fold.
-- Every simulated trade is out-of-sample: test bars occur strictly after the fold's training window.
-- Uses a purge gap of at least the prediction horizon between training and testing.
-- Carries account equity from fold to fold.
-- Reuses the same spread, commission, slippage, TP/SL and decision logic as Backtester v1.
-- Produces per-fold metrics plus combined out-of-sample trades and equity.
+- Retrains a fresh BUY/SELL model pair in every fold.
+- Each test fold is strictly future/out-of-sample relative to its training window.
+- Uses a purge gap of at least the model horizon.
+- Carries account equity forward across folds.
+- Exports every out-of-sample BUY/SELL probability, not only selected trades.
+- Runs a configurable threshold sweep on the identical OOS probability stream.
+- Separates BUY and SELL performance for trade count, win rate, profit factor, expectancy and net P/L.
+- Builds probability calibration bins comparing predicted probability with realized TP-before-SL frequency.
 
 ## Requirements
 
@@ -89,7 +91,7 @@ Train the models first, then run:
 python run_backtest.py
 ```
 
-Default settings are under `backtest:` in `config/config.yaml`.
+Default settings are under `backtest:` in `config/config.yaml`. Set `commission_per_lot_round_turn` to your broker's actual round-trip commission per 1.00 lot. Historical spread is taken from MT5; symbol point size and contract size are read from the broker specification.
 
 Backtest output:
 
@@ -100,8 +102,6 @@ reports/backtest_summary.json
 ```
 
 ## Run Walk-Forward Backtest
-
-The walk-forward runner trains its own fold models in memory, so it does not rely on the saved `buy_model.joblib` / `sell_model.joblib` for the actual test trades.
 
 Run:
 
@@ -118,6 +118,18 @@ walk_forward:
   test_bars: 2000
   step_bars: 2000
   purge_bars: 8
+  threshold_sweep:
+    - 0.50
+    - 0.55
+    - 0.60
+    - 0.65
+    - 0.70
+    - 0.72
+    - 0.75
+    - 0.80
+    - 0.85
+    - 0.90
+  calibration_bins: 10
 ```
 
 With M15 data, the default structure is approximately:
@@ -134,10 +146,21 @@ Outputs:
 reports/walk_forward_trades.csv
 reports/walk_forward_equity.csv
 reports/walk_forward_folds.csv
+reports/walk_forward_predictions.csv
+reports/walk_forward_side_summary.csv
+reports/walk_forward_threshold_sweep.csv
+reports/walk_forward_calibration.csv
 reports/walk_forward_summary.json
+reports/walk_forward_analysis.json
 ```
 
-The combined summary includes final balance, net profit, trade count, win rate, profit factor, expectancy, maximum drawdown, transaction costs and number of out-of-sample folds. `walk_forward_folds.csv` lets you check whether performance is stable across different market periods instead of being driven by one unusually good segment.
+`walk_forward_threshold_sweep.csv` compares trade count, win rate, profit factor, net P/L, expectancy, max drawdown, BUY P/L and SELL P/L at each configured threshold.
+
+`walk_forward_side_summary.csv` answers whether BUY or SELL is helping or hurting the system at the baseline threshold.
+
+`walk_forward_calibration.csv` groups strictly out-of-sample model probabilities into bins and compares the average predicted probability with the actual TP-before-SL win frequency. A model that says 0.80 but wins only 0.55 of those samples is over-confident and should not be interpreted as a literal 80% chance before calibration.
+
+`walk_forward_analysis.json` records the best tested threshold by profit factor and by net profit. Treat these as diagnostic results, not parameters to deploy automatically; choosing a threshold after seeing the same OOS history can itself overfit and should be confirmed on a later untouched period.
 
 ## Run the HMI
 

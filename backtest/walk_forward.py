@@ -11,7 +11,12 @@ from sklearn.utils.class_weight import compute_sample_weight
 from ai.labeling import create_tp_sl_labels
 from backtest.calibration import ProbabilityCalibrator
 from backtest.engine import BacktestConfig, _decision, _simulate_trade, _summary
-from data.feature_engineering import FEATURE_COLUMNS, build_features
+from data.feature_engineering import (
+    BUY_FEATURE_COLUMNS,
+    FEATURE_COLUMNS,
+    SELL_FEATURE_COLUMNS,
+    build_features,
+)
 
 
 def _fit_binary_model(x_train: pd.DataFrame, y_train: pd.Series) -> HistGradientBoostingClassifier:
@@ -34,12 +39,11 @@ def _fit_calibrators(
     y_cal: pd.Series,
 ) -> dict[str, ProbabilityCalibrator]:
     raw = model.predict_proba(x_cal)[:, 1]
-    calibrators: dict[str, ProbabilityCalibrator] = {
+    return {
         "raw": ProbabilityCalibrator("raw").fit(raw, y_cal.to_numpy()),
         "sigmoid": ProbabilityCalibrator("sigmoid").fit(raw, y_cal.to_numpy()),
         "isotonic": ProbabilityCalibrator("isotonic").fit(raw, y_cal.to_numpy()),
     }
-    return calibrators
 
 
 def run_walk_forward_backtest(
@@ -52,15 +56,7 @@ def run_walk_forward_backtest(
     purge_bars: int | None = None,
     calibration_method: str = "raw",
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
-    """Run leakage-safe walk-forward training, calibration and testing.
-
-    Fold layout:
-        model-fit history -> purge -> calibration history -> purge -> future test
-
-    Raw, sigmoid and isotonic probabilities are exported for every OOS test row.
-    `calibration_method` only selects which probability stream drives the baseline
-    simulated trades; all three streams are retained for later comparison.
-    """
+    """Leakage-safe walk-forward with side-specific M15+H1 feature sets."""
     if train_bars < 2000:
         raise ValueError("train_bars must be at least 2000")
     if calibration_bars < 200:
@@ -99,7 +95,6 @@ def run_walk_forward_backtest(
     test_start = first_test_start
     while test_start + test_bars <= n:
         fold_id += 1
-
         calibration_end = test_start - purge_bars
         calibration_start = calibration_end - calibration_bars
         train_end = calibration_start - purge_bars
@@ -136,13 +131,15 @@ def run_walk_forward_backtest(
             test_start += step_bars
             continue
 
-        x_train = train_slice[FEATURE_COLUMNS]
-        buy_model = _fit_binary_model(x_train, y_buy_train)
-        sell_model = _fit_binary_model(x_train, y_sell_train)
+        buy_model = _fit_binary_model(train_slice[BUY_FEATURE_COLUMNS], y_buy_train)
+        sell_model = _fit_binary_model(train_slice[SELL_FEATURE_COLUMNS], y_sell_train)
 
-        x_cal = calibration_slice[FEATURE_COLUMNS]
-        buy_calibrators = _fit_calibrators(buy_model, x_cal, y_buy_cal)
-        sell_calibrators = _fit_calibrators(sell_model, x_cal, y_sell_cal)
+        buy_calibrators = _fit_calibrators(
+            buy_model, calibration_slice[BUY_FEATURE_COLUMNS], y_buy_cal
+        )
+        sell_calibrators = _fit_calibrators(
+            sell_model, calibration_slice[SELL_FEATURE_COLUMNS], y_sell_cal
+        )
 
         valid_mask = test_slice[FEATURE_COLUMNS].notna().all(axis=1)
         valid_local_indices = np.flatnonzero(valid_mask.to_numpy())
@@ -173,9 +170,12 @@ def run_walk_forward_backtest(
 
         fold_trades: list[dict[str, Any]] = []
         if len(valid_local_indices):
-            x_test = test_slice.iloc[valid_local_indices][FEATURE_COLUMNS]
-            buy_raw = buy_model.predict_proba(x_test)[:, 1]
-            sell_raw = sell_model.predict_proba(x_test)[:, 1]
+            buy_raw = buy_model.predict_proba(
+                test_slice.iloc[valid_local_indices][BUY_FEATURE_COLUMNS]
+            )[:, 1]
+            sell_raw = sell_model.predict_proba(
+                test_slice.iloc[valid_local_indices][SELL_FEATURE_COLUMNS]
+            )[:, 1]
 
             method_probabilities: dict[str, tuple[np.ndarray, np.ndarray]] = {}
             for method in ("raw", "sigmoid", "isotonic"):
@@ -245,6 +245,7 @@ def run_walk_forward_backtest(
                 "calibration_samples": int(len(calibration_slice)),
                 "test_bars": int(len(test_slice)),
                 "calibration_method": calibration_method,
+                "architecture": "multi_timeframe_m15_h1_regime_side_specific_v2",
                 "trades": int(len(fold_df)),
                 "net_profit": float(fold_df["net_pnl"].sum()) if not fold_df.empty else 0.0,
                 "win_rate": float((fold_df["net_pnl"] > 0).mean()) if not fold_df.empty else 0.0,
@@ -252,7 +253,6 @@ def run_walk_forward_backtest(
                 "ending_balance": float(balance),
             }
         )
-
         test_start += step_bars
 
     trades_df = pd.DataFrame(all_trades)
@@ -264,13 +264,12 @@ def run_walk_forward_backtest(
             [{"time": str(featured.iloc[first_test_start]["time"]), "equity": backtest_config.initial_balance}]
         )
     else:
-        equity_df = pd.DataFrame(
-            {"time": trades_df["exit_time"], "equity": trades_df["balance_after"]}
-        )
+        equity_df = pd.DataFrame({"time": trades_df["exit_time"], "equity": trades_df["balance_after"]})
 
     summary = _summary(trades_df, backtest_config.initial_balance)
     summary.update(
         {
+            "architecture": "multi_timeframe_m15_h1_regime_side_specific_v2",
             "walk_forward_folds": int(len(folds_df)),
             "train_bars_per_fold": int(train_bars),
             "calibration_bars_per_fold": int(calibration_bars),

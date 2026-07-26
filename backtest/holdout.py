@@ -10,7 +10,12 @@ from ai.labeling import create_tp_sl_labels
 from backtest.analysis import analyze_sides, run_prediction_candidate
 from backtest.engine import BacktestConfig
 from backtest.walk_forward import _fit_binary_model, _fit_calibrators
-from data.feature_engineering import FEATURE_COLUMNS, build_features
+from data.feature_engineering import (
+    BUY_FEATURE_COLUMNS,
+    FEATURE_COLUMNS,
+    SELL_FEATURE_COLUMNS,
+    build_features,
+)
 
 
 @dataclass(frozen=True)
@@ -20,6 +25,8 @@ class LockedCandidate:
     threshold: float
 
 
+# Historical v1 candidates are retained only for reproducibility of the already
+# consumed holdout. Do not reuse that consumed period for v2 feature selection.
 LOCKED_CANDIDATES: tuple[LockedCandidate, ...] = (
     LockedCandidate("raw_055", "raw", 0.55),
     LockedCandidate("raw_060", "raw", 0.60),
@@ -38,16 +45,6 @@ def build_untouched_holdout_predictions(
     holdout_bars: int = 5000,
     purge_bars: int | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Fit once on old history and predict one locked historical holdout block.
-
-    The most recent `recent_bars_excluded` bars are excluded from *all* fit,
-    calibration and holdout operations because they have already been used during
-    development. Inside the older untouched region, the layout is:
-
-        model fit -> purge -> calibration -> purge -> FINAL HOLDOUT
-
-    No threshold search or model selection occurs here.
-    """
     purge_bars = int(purge_bars or cfg.horizon)
     if purge_bars < cfg.horizon:
         raise ValueError("purge_bars must be at least the label horizon")
@@ -97,18 +94,17 @@ def build_untouched_holdout_predictions(
     y_sell_train = train_slice["sell_win"].astype(int)
     y_buy_cal = calibration_slice["buy_win"].astype(int)
     y_sell_cal = calibration_slice["sell_win"].astype(int)
-    if any(
-        y.nunique() < 2
-        for y in (y_buy_train, y_sell_train, y_buy_cal, y_sell_cal)
-    ):
+    if any(y.nunique() < 2 for y in (y_buy_train, y_sell_train, y_buy_cal, y_sell_cal)):
         raise ValueError("Untouched fit/calibration blocks must contain both classes")
 
-    buy_model = _fit_binary_model(train_slice[FEATURE_COLUMNS], y_buy_train)
-    sell_model = _fit_binary_model(train_slice[FEATURE_COLUMNS], y_sell_train)
-
-    x_cal = calibration_slice[FEATURE_COLUMNS]
-    buy_calibrators = _fit_calibrators(buy_model, x_cal, y_buy_cal)
-    sell_calibrators = _fit_calibrators(sell_model, x_cal, y_sell_cal)
+    buy_model = _fit_binary_model(train_slice[BUY_FEATURE_COLUMNS], y_buy_train)
+    sell_model = _fit_binary_model(train_slice[SELL_FEATURE_COLUMNS], y_sell_train)
+    buy_calibrators = _fit_calibrators(
+        buy_model, calibration_slice[BUY_FEATURE_COLUMNS], y_buy_cal
+    )
+    sell_calibrators = _fit_calibrators(
+        sell_model, calibration_slice[SELL_FEATURE_COLUMNS], y_sell_cal
+    )
 
     export = holdout_slice.copy()
     export["fold"] = 1
@@ -137,9 +133,12 @@ def build_untouched_holdout_predictions(
     if len(valid_indices) == 0:
         raise ValueError("No valid feature rows in final holdout")
 
-    x_holdout = holdout_slice.iloc[valid_indices][FEATURE_COLUMNS]
-    buy_raw = buy_model.predict_proba(x_holdout)[:, 1]
-    sell_raw = sell_model.predict_proba(x_holdout)[:, 1]
+    buy_raw = buy_model.predict_proba(
+        holdout_slice.iloc[valid_indices][BUY_FEATURE_COLUMNS]
+    )[:, 1]
+    sell_raw = sell_model.predict_proba(
+        holdout_slice.iloc[valid_indices][SELL_FEATURE_COLUMNS]
+    )[:, 1]
     for method in ("raw", "sigmoid", "isotonic"):
         export.loc[valid_indices, f"buy_probability_{method}"] = buy_calibrators[method].transform(buy_raw)
         export.loc[valid_indices, f"sell_probability_{method}"] = sell_calibrators[method].transform(sell_raw)
@@ -147,6 +146,7 @@ def build_untouched_holdout_predictions(
     manifest = {
         "locked": True,
         "optimizer_allowed": False,
+        "architecture": "multi_timeframe_m15_h1_regime_side_specific_v2",
         "recent_bars_excluded": int(recent_bars_excluded),
         "train_bars": int(train_bars),
         "calibration_bars": int(calibration_bars),
@@ -172,7 +172,6 @@ def evaluate_locked_candidates(
     predictions: pd.DataFrame,
     cfg: BacktestConfig,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, pd.DataFrame]]:
-    """Evaluate only the pre-registered candidates; performs no optimization."""
     rows: list[dict[str, Any]] = []
     side_rows: list[pd.DataFrame] = []
     trade_logs: dict[str, pd.DataFrame] = {}
@@ -181,39 +180,29 @@ def evaluate_locked_candidates(
         trades, summary = run_prediction_candidate(
             predictions,
             cfg,
-            threshold=candidate.threshold,
             method=candidate.method,
+            threshold=candidate.threshold,
         )
+        side = analyze_sides(trades)
+        side["candidate"] = candidate.name
+        side["method"] = candidate.method
+        side["threshold"] = candidate.threshold
+        side_rows.append(side)
         trade_logs[candidate.name] = trades
-        sides = analyze_sides(trades)
-        sides.insert(0, "candidate", candidate.name)
-        side_rows.append(sides)
 
-        buy = sides.loc[sides["side"] == "BUY"].iloc[0]
-        sell = sides.loc[sides["side"] == "SELL"].iloc[0]
+        buy = side.loc[side["side"] == "BUY"].iloc[0]
+        sell = side.loc[side["side"] == "SELL"].iloc[0]
         rows.append(
             {
                 "candidate": candidate.name,
                 "method": candidate.method,
                 "threshold": candidate.threshold,
-                "trades": int(summary.get("trades", 0)),
-                "wins": int(summary.get("wins", 0)),
-                "losses": int(summary.get("losses", 0)),
-                "win_rate": float(summary.get("win_rate", 0.0)),
-                "profit_factor": summary.get("profit_factor"),
-                "net_profit": float(summary.get("net_profit", 0.0)),
-                "expectancy": float(summary.get("expectancy", 0.0)),
-                "max_drawdown_pct": float(summary.get("max_drawdown_pct", 0.0)),
-                "total_costs": float(summary.get("total_costs", 0.0)),
-                "buy_trades": int(buy["trades"]),
+                **summary,
                 "buy_profit_factor": buy["profit_factor"],
                 "buy_net_profit": float(buy["net_profit"]),
-                "sell_trades": int(sell["trades"]),
                 "sell_profit_factor": sell["profit_factor"],
                 "sell_net_profit": float(sell["net_profit"]),
             }
         )
 
-    result_df = pd.DataFrame(rows)
-    side_df = pd.concat(side_rows, ignore_index=True) if side_rows else pd.DataFrame()
-    return result_df, side_df, trade_logs
+    return pd.DataFrame(rows), pd.concat(side_rows, ignore_index=True), trade_logs

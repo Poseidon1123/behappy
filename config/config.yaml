@@ -1,7 +1,18 @@
 trading:
   symbol: "XAUUSD.sc"
   timeframe: "M15"
-  bars: 100
+  bars: 300
+
+ai:
+  model_path: "models/xauusd_m15_model.joblib"
+  training_bars: 50000
+  horizon_bars: 8
+  label_atr_multiplier: 0.8
+  test_fraction: 0.20
+  learning_rate: 0.06
+  max_iter: 300
+  max_leaf_nodes: 31
+  l2_regularization: 1.0
 
 risk:
   risk_per_trade_pct: 0.5

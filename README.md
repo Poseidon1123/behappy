@@ -96,6 +96,36 @@ reports/nested_v3_1/sell_architecture_selection_counts.csv
 
 If all candidates are weak, v3.1 still selects the least-bad candidate using inner history only. It never inspects an outer test before deciding to keep or discard that fold.
 
+### Step 10 - Frozen v3.1 Forward Confirmation
+
+The v3.1 rule set is frozen in `config/frozen_v3_1.json`. The development cutoff is fixed at:
+
+```text
+2026-06-25 04:30:00 UTC
+```
+
+The forward-confirmation runner only evaluates closed M15 bars strictly after that timestamp. It reconstructs the robust inner selection entirely from pre-confirmation history, keeps an 8-bar purge before the confirmation window, refits the selected BUY/SELL models on the frozen 12,000-bar history and then evaluates the later data exactly once.
+
+There is no threshold sweep, no feature ablation and no optimizer in this runner.
+
+Run:
+```bash
+python run_forward_confirmation.py
+```
+
+Outputs:
+```text
+reports/forward_confirmation_v3_1/summary.json
+reports/forward_confirmation_v3_1/trades.csv
+reports/forward_confirmation_v3_1/predictions.csv
+reports/forward_confirmation_v3_1/side_summary.csv
+reports/forward_confirmation_v3_1/frozen_inner_candidate_scores.csv
+reports/forward_confirmation_v3_1/frozen_inner_split_diagnostics.csv
+reports/forward_confirmation_v3_1/freeze_manifest_snapshot.json
+```
+
+The SHA-256 hash of the freeze manifest is printed and stored with the report. Once the confirmation result has been inspected, that post-cutoff window is considered consumed and must not be used to tune v3.1 while still calling it forward confirmation.
+
 ## Install
 ```bash
 python -m venv .venv
@@ -112,11 +142,12 @@ python run_walk_forward.py
 python run_feature_ablation.py
 python run_nested_walk_forward.py
 python run_nested_robust.py
+python run_forward_confirmation.py
 python main.py
 ```
 
 ## Validation policy
-Ordinary walk-forward and feature ablation are development/model-selection analyses. Nested v3 and robust v3.1 provide stronger outer-test estimates because selections occur only inside historical training data, but they are still not substitutes for a genuinely new untouched confirmation period after the final rule set is frozen.
+Ordinary walk-forward and feature ablation are development/model-selection analyses. Nested v3 and robust v3.1 provide stronger outer-test estimates because selections occur only inside historical training data. Frozen forward confirmation is a stricter post-development check, but once its result is inspected that time window is consumed too.
 
 ## Safety
-The project remains read-only. Monitoring does not send, modify or close orders. Live execution should only be added after a stable nested result, a new untouched confirmation period and dedicated demo-tested risk controls.
+The project remains read-only. Monitoring does not send, modify or close orders. Live execution should only be added after a stable nested result, forward confirmation and dedicated demo-tested risk controls.

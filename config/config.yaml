@@ -118,5 +118,10 @@ nested_robust:
     - 0.75
     - 0.80
 
+meta_labeling:
+  bars: 30000
+  gate_threshold: 0.55
+  min_meta_samples: 120
+
 application:
   log_level: "INFO"

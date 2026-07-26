@@ -36,9 +36,11 @@ backtest:
 walk_forward:
   bars: 30000
   train_bars: 12000
+  calibration_bars: 2000
   test_bars: 2000
   step_bars: 2000
   purge_bars: 8
+  baseline_calibration_method: "raw"
   threshold_sweep:
     - 0.50
     - 0.55

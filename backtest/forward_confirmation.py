@@ -121,7 +121,14 @@ def run_forward_confirmation(
     raw_df: pd.DataFrame,
     cfg: BacktestConfig,
     manifest: dict[str, Any],
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+) -> tuple[
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    dict[str, Any],
+]:
     """Run one frozen v3.1 confirmation strictly after the development cutoff.
 
     Architecture candidates, threshold grid, inner-split count and scoring policy are
@@ -215,7 +222,6 @@ def run_forward_confirmation(
     sell_model = _fit_binary_model(refit[sell_features], y_sell)
 
     test = featured.iloc[confirmation_start:].copy().reset_index(drop=True)
-    # Keep enough future candles inside the confirmation period for honest horizon-based exits.
     valid_mask = test[buy_features].notna().all(axis=1) & test[sell_features].notna().all(axis=1)
     valid_idx = np.flatnonzero(valid_mask.to_numpy())
     valid_idx = valid_idx[valid_idx < len(test) - cfg.horizon - 1]

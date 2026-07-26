@@ -1,7 +1,7 @@
 trading:
   symbol: "XAUUSD.sc"
   timeframe: "M15"
-  bars: 100
+  bars: 300
 
 risk:
   risk_per_trade_pct: 0.5
@@ -12,6 +12,13 @@ risk:
   take_profit_pct: 0.6
   buy_threshold: 0.72
   sell_threshold: 0.72
+
+ai_training:
+  bars: 50000
+  horizon: 8
+  take_profit_pct: 0.006
+  stop_loss_pct: 0.003
+  validation_fraction: 0.20
 
 application:
   log_level: "INFO"

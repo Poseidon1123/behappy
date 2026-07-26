@@ -56,20 +56,15 @@ class AIPredictor:
                 "status": "NOT_ENOUGH_DATA",
             }
 
+        # These are independent probabilities: P(BUY reaches TP before SL)
+        # and P(SELL reaches TP before SL), based on the separately trained models.
         buy = float(self.buy_model.predict_proba(latest)[:, 1][0])
         sell = float(self.sell_model.predict_proba(latest)[:, 1][0])
 
-        # HOLD is not a separately trained class. It represents lack of directional
-        # edge or model conflict, which is useful for threshold-based execution.
-        directional_confidence = max(buy, sell)
+        # HOLD is a display/decision aid, not a third trained class.
+        edge = max(buy, sell)
         conflict = min(buy, sell)
-        hold = float(np.clip(1.0 - directional_confidence + 0.5 * conflict, 0.0, 1.0))
-
-        total = buy + sell + hold
-        if total <= 0:
-            buy, sell, hold = 0.0, 0.0, 1.0
-        else:
-            buy, sell, hold = buy / total, sell / total, hold / total
+        hold = float(np.clip((1.0 - edge) + 0.25 * conflict, 0.0, 1.0))
 
         return {
             "buy_probability": buy,

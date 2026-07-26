@@ -9,3 +9,6 @@ __pycache__/
 .DS_Store
 Thumbs.db
 logs/*.log
+training_data/*.csv
+models/*.joblib
+reports/*.json

@@ -54,7 +54,7 @@ Python foundation for an AI-assisted MetaTrader 5 trading system.
 
 ### Step 6 - Final Untouched Holdout Test
 
-The previously run 2024 final holdout is consumed and must not be reused to choose v2 features, thresholds or hyperparameters. The holdout runner remains only for reproducibility of that historical experiment.
+The previously run 2024 final holdout is consumed and must not be reused to choose v2/v3 features, thresholds or hyperparameters. The holdout runner remains only for reproducibility of that historical experiment.
 
 ### Step 7 - Feature Ablation Walk-Forward
 
@@ -83,19 +83,64 @@ Run:
 python run_feature_ablation.py
 ```
 
+Outputs are saved under `reports/feature_ablation/`.
+
+### Step 8 - Nested Walk-Forward v3
+
+Nested v3 removes the main selection bias from choosing architectures/thresholds after seeing ordinary walk-forward test folds.
+
+Architecture rules are fixed before the run:
+
+```text
+BUY architecture:
+  A_m15_baseline (fixed)
+
+SELL architecture candidates:
+  A_m15_baseline
+  B_m15_raw_h1
+  E_m15_regime_only
+
+BUY/SELL threshold candidates:
+  0.50, 0.55, 0.60, 0.65, 0.70, 0.72, 0.75, 0.80
+```
+
+Each outer fold follows:
+
+```text
+OUTER TRAIN HISTORY
+├─ INNER FIT
+├─ purge
+└─ INNER VALIDATION
+     ├─ choose BUY threshold
+     └─ choose SELL architecture + SELL threshold
+
+purge
+
+OUTER TEST
+└─ evaluate the locked inner choices once
+```
+
+The outer test is never used to pick architecture or threshold. BUY selection is based on BUY-only inner performance. SELL architecture/threshold selection is based on SELL-only inner performance. After selection, the chosen models are refit on the full outer-training history and then evaluated on the future outer test.
+
+Run:
+
+```bash
+python run_nested_walk_forward.py
+```
+
 Outputs:
 
 ```text
-reports/feature_ablation/summary_fixed_threshold.csv
-reports/feature_ablation/side_summary_fixed_threshold.csv
-reports/feature_ablation/threshold_sweep.csv
-reports/feature_ablation/best_thresholds.csv
-reports/feature_ablation/fold_summary.csv
-reports/feature_ablation/feature_groups.json
-reports/feature_ablation/trades_<group>.csv
+reports/nested_v3/summary.json
+reports/nested_v3/outer_trades.csv
+reports/nested_v3/outer_folds.csv
+reports/nested_v3/outer_side_summary.csv
+reports/nested_v3/inner_selections.csv
+reports/nested_v3/inner_threshold_diagnostics.csv
+reports/nested_v3/sell_architecture_selection_counts.csv
 ```
 
-The fixed-threshold summary is the cleanest apples-to-apples comparison. The threshold sweep is development/model-selection information only and must later be confirmed on a genuinely new untouched period.
+If every inner candidate is weak in a fold, the procedure still selects the least-bad eligible candidate using only inner history. It never looks at the outer test and then drops an unfavorable fold.
 
 ## Requirements
 
@@ -133,12 +178,16 @@ python run_backtest.py
 python run_walk_forward.py
 ```
 
-Reports are saved under `reports/walk_forward_*.csv/json`.
-
 ## Run Feature Ablation
 
 ```bash
 python run_feature_ablation.py
+```
+
+## Run Nested Walk-Forward v3
+
+```bash
+python run_nested_walk_forward.py
 ```
 
 ## Run the HMI
@@ -147,12 +196,12 @@ python run_feature_ablation.py
 python main.py
 ```
 
-After retraining, reload the AI model from the HMI. The predictor status for the new architecture is `READY_MTF`.
+After retraining, reload the AI model from the HMI. The predictor status for the multi-timeframe architecture is `READY_MTF`.
 
 ## Important validation note
 
-Backtester v1 can be partly in-sample if its data overlaps model training. Walk-forward validation is the primary development test. Feature ablation is also development/model-selection analysis. A final holdout should be consumed only once for a frozen candidate and must not be recycled for feature selection.
+Backtester v1 can be partly in-sample if its data overlaps model training. Ordinary walk-forward and feature ablation are development/model-selection analyses. Nested walk-forward v3 is a stronger development estimate because architecture/threshold decisions occur inside each outer training period, but it is still not a substitute for a genuinely new untouched confirmation period after v3 candidate rules are frozen.
 
 ## Safety
 
-The project remains read-only. Monitoring does not send, modify or close orders. Live execution should only be added after the new architecture passes walk-forward validation, a new untouched confirmation period, and dedicated demo-tested risk controls.
+The project remains read-only. Monitoring does not send, modify or close orders. Live execution should only be added after the selected architecture passes nested walk-forward validation, a new untouched confirmation period, and dedicated demo-tested risk controls.

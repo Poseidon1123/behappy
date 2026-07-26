@@ -61,10 +61,23 @@ def train_buy_sell_models(
     take_profit_pct: float = 0.006,
     stop_loss_pct: float = 0.003,
     validation_fraction: float = 0.20,
+    purge_bars: int | None = None,
 ) -> dict:
-    """Train BUY and SELL models with a chronological train/validation split."""
+    """Train BUY and SELL models with a purged chronological split.
+
+    The purge gap prevents the future candles used to construct labels near the
+    end of the training window from overlapping with the validation period.
+    By default the purge equals `horizon`, which is the minimum safe gap for
+    the current first-touch labeling scheme.
+    """
     if not 0.05 <= validation_fraction <= 0.40:
         raise ValueError("validation_fraction must be between 0.05 and 0.40")
+
+    if purge_bars is None:
+        purge_bars = horizon
+    purge_bars = int(purge_bars)
+    if purge_bars < horizon:
+        raise ValueError("purge_bars must be at least as large as horizon")
 
     featured = build_features(raw_df)
     labeled = create_tp_sl_labels(
@@ -74,15 +87,31 @@ def train_buy_sell_models(
         stop_loss_pct=stop_loss_pct,
     )
 
+    before_drop = len(labeled)
     dataset = labeled.dropna(subset=FEATURE_COLUMNS + ["buy_win", "sell_win"]).copy()
+    ambiguous_or_invalid_dropped = before_drop - len(dataset)
+
     if len(dataset) < 2000:
         raise ValueError(
             f"Only {len(dataset)} usable samples. Collect at least a few thousand M15 bars."
         )
 
     split_index = int(len(dataset) * (1.0 - validation_fraction))
-    train = dataset.iloc[:split_index]
+    train_end = split_index - purge_bars
+
+    if train_end <= 0 or split_index >= len(dataset):
+        raise ValueError(
+            "Not enough samples for the requested validation fraction and purge gap."
+        )
+
+    train = dataset.iloc[:train_end]
+    purged = dataset.iloc[train_end:split_index]
     valid = dataset.iloc[split_index:]
+
+    if len(train) < 1000 or len(valid) < 200:
+        raise ValueError(
+            "Train/validation sets are too small after purging. Collect more history."
+        )
 
     X_train = train[FEATURE_COLUMNS]
     X_valid = valid[FEATURE_COLUMNS]
@@ -93,7 +122,9 @@ def train_buy_sell_models(
     y_sell_valid = valid["sell_win"].astype(int)
 
     if y_buy_train.nunique() < 2 or y_sell_train.nunique() < 2:
-        raise ValueError("Training labels contain only one class. Adjust TP/SL/horizon or collect more data.")
+        raise ValueError(
+            "Training labels contain only one class. Adjust TP/SL/horizon or collect more data."
+        )
 
     buy_model = _fit_binary_model(X_train, y_buy_train)
     sell_model = _fit_binary_model(X_train, y_sell_train)
@@ -104,13 +135,18 @@ def train_buy_sell_models(
     report = {
         "feature_columns": FEATURE_COLUMNS,
         "horizon": horizon,
+        "purge_bars": purge_bars,
         "take_profit_pct": take_profit_pct,
         "stop_loss_pct": stop_loss_pct,
         "total_usable_samples": int(len(dataset)),
+        "dropped_ambiguous_or_invalid_samples": int(ambiguous_or_invalid_dropped),
         "train_samples": int(len(train)),
+        "purged_samples": int(len(purged)),
         "validation_samples": int(len(valid)),
         "train_start": str(train["time"].iloc[0]),
         "train_end": str(train["time"].iloc[-1]),
+        "purge_start": str(purged["time"].iloc[0]) if len(purged) else None,
+        "purge_end": str(purged["time"].iloc[-1]) if len(purged) else None,
         "validation_start": str(valid["time"].iloc[0]),
         "validation_end": str(valid["time"].iloc[-1]),
         "buy": _metric_dict(y_buy_valid, buy_proba),
@@ -126,6 +162,7 @@ def train_buy_sell_models(
         {
             "feature_columns": FEATURE_COLUMNS,
             "horizon": horizon,
+            "purge_bars": purge_bars,
             "take_profit_pct": take_profit_pct,
             "stop_loss_pct": stop_loss_pct,
         },

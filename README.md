@@ -103,34 +103,44 @@ python run_forward_confirmation.py
 ### Step 11 - v4 Meta-Labeling / Trade Gate
 v4 keeps the primary BUY/SELL opportunity models, but adds a second AI layer that decides whether a candidate should actually be traded or skipped.
 
-The meta gate uses:
-- primary-side probability,
-- opposing probability,
-- probability gap and excess over the primary threshold,
-- M15 momentum/volatility/RSI/candle context,
-- spread-relative information,
-- H1 context,
-- market-regime features.
-
-To prevent leakage, meta models are trained only from **out-of-fold primary probabilities** generated inside each outer-training history. The outer test is never used to train the primary model or the meta gate.
-
-The first v4 baseline deliberately fixes the meta gate threshold at `0.55`; it does not tune that number on outer-test results. Each outer fold compares the same primary strategy with and without the gate.
+The first v4 baseline uses TP/SL outcome labels and a fixed gate threshold of `0.55`. Meta models are trained only from out-of-fold primary probabilities generated inside each outer-training history.
 
 Run:
 ```bash
 python run_meta_labeling.py
 ```
 
-Outputs:
+### Step 12 - v4.1 Economic Meta Gate
+v4.1 changes the gate objective from a TP/SL class label to an economic label:
+
 ```text
-reports/meta_labeling_v4/summary.json
-reports/meta_labeling_v4/baseline_trades.csv
-reports/meta_labeling_v4/gated_trades.csv
-reports/meta_labeling_v4/fold_comparison.csv
-reports/meta_labeling_v4/meta_training_samples.csv
+meta_target = 1 when realized net PnL > 0 after spread + slippage + commission
+meta_target = 0 otherwise
 ```
 
-The important comparison is whether the gate reduces trades while improving Profit Factor and expectancy on the same outer folds. The already-consumed 2024 holdout and June-July 2026 forward-confirmation period must not be reused as clean holdouts for v4.
+Key changes:
+- BUY and SELL use different meta-feature sets.
+- Meta training candidates are harvested more broadly at a fixed OOF probability floor of `0.45`, even when the final primary threshold is higher.
+- Primary probabilities used for meta training remain strictly out-of-fold.
+- Large wins/losses receive more sample weight than near-flat outcomes.
+- The gate threshold stays fixed at `0.55`; there is no gate-threshold optimizer in this baseline test.
+- Outer tests are still excluded from both primary and meta training.
+
+Run:
+```bash
+python run_meta_labeling_v41.py
+```
+
+Outputs:
+```text
+reports/meta_labeling_v4_1/summary.json
+reports/meta_labeling_v4_1/baseline_trades.csv
+reports/meta_labeling_v4_1/gated_trades.csv
+reports/meta_labeling_v4_1/fold_comparison.csv
+reports/meta_labeling_v4_1/meta_training_availability.csv
+```
+
+The key test is whether v4.1 can improve Profit Factor and expectancy while preserving enough trades across multiple outer folds. Previously inspected holdouts and the June-July 2026 forward-confirmation window remain consumed and are not valid clean confirmations for v4.1.
 
 ## Install
 ```bash
@@ -150,11 +160,12 @@ python run_nested_walk_forward.py
 python run_nested_robust.py
 python run_forward_confirmation.py
 python run_meta_labeling.py
+python run_meta_labeling_v41.py
 python main.py
 ```
 
 ## Validation policy
-Ordinary walk-forward and feature ablation are development/model-selection analyses. Nested v3/v3.1 and v4 meta-labeling use stricter outer-test separation, but a genuinely new untouched period is still required after a final v4 rule set is frozen. Previously inspected holdouts remain consumed.
+Ordinary walk-forward and feature ablation are development/model-selection analyses. Nested v3/v3.1 and v4/v4.1 meta-labeling use stricter outer-test separation, but a genuinely new untouched period is still required after a final rule set is frozen. Previously inspected holdouts remain consumed.
 
 ## Safety
 The project remains read-only. Monitoring does not send, modify or close orders. Live execution should only be added after a stable nested result, a new untouched confirmation period and dedicated demo-tested risk controls.

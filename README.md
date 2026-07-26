@@ -44,16 +44,17 @@ Python foundation for an AI-assisted MetaTrader 5 trading system.
 - Uses MT5 `point` and `trade_contract_size` for P/L and transaction-cost calculations.
 - Produces trade log, equity curve and summary statistics.
 
-### Step 5 - Walk-Forward validation and probability analysis
+### Step 5 - Walk-Forward validation and probability calibration
 
 - Retrains a fresh BUY/SELL model pair in every fold.
-- Each test fold is strictly future/out-of-sample relative to its training window.
-- Uses a purge gap of at least the model horizon.
-- Carries account equity forward across folds.
-- Exports every out-of-sample BUY/SELL probability, not only selected trades.
-- Runs a configurable threshold sweep on the identical OOS probability stream.
-- Separates BUY and SELL performance for trade count, win rate, profit factor, expectancy and net P/L.
-- Builds probability calibration bins comparing predicted probability with realized TP-before-SL frequency.
+- Each test fold is strictly future/out-of-sample relative to its fitting and calibration windows.
+- Uses two purge gaps: one between model fitting and calibration, and another between calibration and test.
+- Fits Sigmoid (Platt-style) and Isotonic calibration only on historical calibration bars.
+- Exports raw, sigmoid and isotonic BUY/SELL probabilities for the identical future test rows.
+- Runs the same threshold sweep for all three probability streams.
+- Reports BUY/SELL performance separately.
+- Reports Brier Score and Expected Calibration Error (ECE); lower is better.
+- Builds calibration bins comparing predicted probability with realized TP-before-SL frequency.
 
 ## Requirements
 
@@ -101,7 +102,7 @@ reports/backtest_equity.csv
 reports/backtest_summary.json
 ```
 
-## Run Walk-Forward Backtest
+## Run calibrated Walk-Forward Backtest
 
 Run:
 
@@ -115,9 +116,11 @@ Default settings:
 walk_forward:
   bars: 30000
   train_bars: 12000
+  calibration_bars: 2000
   test_bars: 2000
   step_bars: 2000
   purge_bars: 8
+  baseline_calibration_method: "raw"
   threshold_sweep:
     - 0.50
     - 0.55
@@ -132,13 +135,17 @@ walk_forward:
   calibration_bins: 10
 ```
 
-With M15 data, the default structure is approximately:
+With M15 data, each fold follows this leakage-safe order:
 
 ```text
-Fold 1: 12,000 train bars -> 8 purge bars -> 2,000 future test bars
-Fold 2: next rolling 12,000 train bars -> purge -> next 2,000 test bars
-...
+12,000 model-fit bars
+-> 8 purge bars
+-> 2,000 calibration bars
+-> 8 purge bars
+-> 2,000 future test bars
 ```
+
+The rolling window then advances by `step_bars` and repeats. The calibration samples are earlier than the test samples and are never reused as future test data for the same fold.
 
 Outputs:
 
@@ -150,17 +157,21 @@ reports/walk_forward_predictions.csv
 reports/walk_forward_side_summary.csv
 reports/walk_forward_threshold_sweep.csv
 reports/walk_forward_calibration.csv
+reports/walk_forward_calibration_metrics.csv
+reports/walk_forward_calibration_best.csv
 reports/walk_forward_summary.json
 reports/walk_forward_analysis.json
 ```
 
-`walk_forward_threshold_sweep.csv` compares trade count, win rate, profit factor, net P/L, expectancy, max drawdown, BUY P/L and SELL P/L at each configured threshold.
+`walk_forward_predictions.csv` contains raw, sigmoid and isotonic probabilities for the same OOS test rows.
 
-`walk_forward_side_summary.csv` answers whether BUY or SELL is helping or hurting the system at the baseline threshold.
+`walk_forward_threshold_sweep.csv` compares trade count, win rate, profit factor, net P/L, expectancy, max drawdown, BUY P/L and SELL P/L for every calibration method at every configured threshold.
 
-`walk_forward_calibration.csv` groups strictly out-of-sample model probabilities into bins and compares the average predicted probability with the actual TP-before-SL win frequency. A model that says 0.80 but wins only 0.55 of those samples is over-confident and should not be interpreted as a literal 80% chance before calibration.
+`walk_forward_calibration_metrics.csv` compares Brier Score and ECE for raw, sigmoid and isotonic probability streams separately for BUY and SELL. Lower values mean the reported probabilities better match realized frequencies.
 
-`walk_forward_analysis.json` records the best tested threshold by profit factor and by net profit. Treat these as diagnostic results, not parameters to deploy automatically; choosing a threshold after seeing the same OOS history can itself overfit and should be confirmed on a later untouched period.
+`walk_forward_calibration.csv` provides probability-bin diagnostics for all three methods.
+
+`walk_forward_calibration_best.csv` reports the best tested threshold by Profit Factor and by Net Profit for each method. These are diagnostic/model-selection results only; any selected method/threshold must be confirmed on a later untouched period before deployment.
 
 ## Run the HMI
 
@@ -172,7 +183,7 @@ After training, the header should show `AI MODEL READY`. If the HMI was already 
 
 ## Important validation note
 
-Backtester v1 can be partly in-sample if its data overlaps model training. The walk-forward backtest is the preferred validation method because each test window uses models fitted only on earlier bars. A profitable walk-forward result still does not prove future profitability; inspect fold-to-fold stability, costs, drawdown, trade count, probability calibration and demo performance before enabling order execution.
+Backtester v1 can be partly in-sample if its data overlaps model training. The calibrated walk-forward test is preferred because model fitting, probability calibration and final testing occur in chronological order with purge gaps. A profitable result still does not prove future profitability; inspect fold-to-fold stability, costs, drawdown, trade count, calibration quality and demo performance before enabling order execution.
 
 ## Safety
 

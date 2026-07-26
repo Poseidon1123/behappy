@@ -6,7 +6,11 @@ from typing import Any, Iterable
 import numpy as np
 import pandas as pd
 
+from backtest.calibration import calibration_metrics
 from backtest.engine import BacktestConfig, _decision, _simulate_trade, _summary
+
+
+CALIBRATION_METHODS = ("raw", "sigmoid", "isotonic")
 
 
 def _empty_side_summary(side: str) -> dict[str, Any]:
@@ -24,7 +28,6 @@ def _empty_side_summary(side: str) -> dict[str, Any]:
 
 
 def analyze_sides(trades: pd.DataFrame) -> pd.DataFrame:
-    """Summarize BUY and SELL performance independently."""
     rows: list[dict[str, Any]] = []
     for side in ("BUY", "SELL"):
         part = trades.loc[trades.get("side", pd.Series(dtype=str)) == side].copy()
@@ -59,18 +62,18 @@ def analyze_sides(trades: pd.DataFrame) -> pd.DataFrame:
 def calibration_table(
     predictions: pd.DataFrame,
     bins: int = 10,
+    method: str = "raw",
 ) -> pd.DataFrame:
-    """Compare model probability with realized TP-before-SL frequency OOS."""
     if bins < 2:
         raise ValueError("bins must be at least 2")
+    if method not in CALIBRATION_METHODS:
+        raise ValueError(f"Unknown calibration method: {method}")
 
     edges = np.linspace(0.0, 1.0, bins + 1)
     rows: list[dict[str, Any]] = []
 
-    for side, probability_col, outcome_col in (
-        ("BUY", "buy_probability", "buy_win"),
-        ("SELL", "sell_probability", "sell_win"),
-    ):
+    for side, outcome_col in (("BUY", "buy_win"), ("SELL", "sell_win")):
+        probability_col = f"{side.lower()}_probability_{method}"
         part = predictions[[probability_col, outcome_col]].dropna().copy()
         if part.empty:
             continue
@@ -88,6 +91,7 @@ def calibration_table(
             actual_win_rate = float(group[outcome_col].astype(float).mean())
             rows.append(
                 {
+                    "method": method,
                     "side": side,
                     "probability_bin": str(interval),
                     "samples": int(len(group)),
@@ -100,17 +104,39 @@ def calibration_table(
     return pd.DataFrame(rows)
 
 
+def calibration_method_summary(
+    predictions: pd.DataFrame,
+    bins: int = 10,
+) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for method in CALIBRATION_METHODS:
+        for side, outcome_col in (("BUY", "buy_win"), ("SELL", "sell_win")):
+            probability_col = f"{side.lower()}_probability_{method}"
+            metrics = calibration_metrics(
+                predictions[outcome_col],
+                predictions[probability_col],
+                bins=bins,
+            )
+            rows.append({"method": method, "side": side, **metrics})
+    return pd.DataFrame(rows)
+
+
 def _run_predictions_at_threshold(
     predictions: pd.DataFrame,
     cfg: BacktestConfig,
     threshold: float,
+    method: str = "raw",
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Replay OOS predictions using one symmetric BUY/SELL threshold."""
+    if method not in CALIBRATION_METHODS:
+        raise ValueError(f"Unknown calibration method: {method}")
+
     threshold_cfg = replace(
         cfg,
         buy_threshold=float(threshold),
         sell_threshold=float(threshold),
     )
+    buy_col = f"buy_probability_{method}"
+    sell_col = f"sell_probability_{method}"
 
     trades: list[dict[str, Any]] = []
     balance = cfg.initial_balance
@@ -120,13 +146,18 @@ def _run_predictions_at_threshold(
         if fold.empty:
             continue
 
-        probability_by_index = {
-            int(row.local_index): (float(row.buy_probability), float(row.sell_probability))
-            for row in fold.itertuples()
-        }
-        first_i = int(fold["local_index"].min())
-        last_i = int(fold["local_index"].max())
-        i = first_i
+        probability_by_index: dict[int, tuple[float, float]] = {}
+        for row in fold.itertuples():
+            buy = getattr(row, buy_col)
+            sell = getattr(row, sell_col)
+            if not np.isfinite(buy) or not np.isfinite(sell):
+                continue
+            probability_by_index[int(row.local_index)] = (float(buy), float(sell))
+
+        if not probability_by_index:
+            continue
+        i = min(probability_by_index)
+        last_i = max(probability_by_index)
 
         while i <= last_i:
             pair = probability_by_index.get(i)
@@ -152,6 +183,7 @@ def _run_predictions_at_threshold(
             row = asdict(trade)
             row["fold"] = int(fold_id)
             row["threshold"] = float(threshold)
+            row["calibration_method"] = method
             trades.append(row)
             balance = trade.balance_after
             i = exit_index + 1
@@ -164,21 +196,24 @@ def threshold_sweep(
     predictions: pd.DataFrame,
     config: BacktestConfig,
     thresholds: Iterable[float],
+    method: str = "raw",
 ) -> pd.DataFrame:
-    """Evaluate multiple probability thresholds on identical OOS predictions."""
     rows: list[dict[str, Any]] = []
     for threshold in thresholds:
         value = float(threshold)
         if not 0.0 < value < 1.0:
             raise ValueError(f"Invalid threshold: {value}")
 
-        trades, summary = _run_predictions_at_threshold(predictions, config, value)
+        trades, summary = _run_predictions_at_threshold(
+            predictions, config, value, method=method
+        )
         side_df = analyze_sides(trades)
         buy = side_df.loc[side_df["side"] == "BUY"].iloc[0].to_dict()
         sell = side_df.loc[side_df["side"] == "SELL"].iloc[0].to_dict()
 
         rows.append(
             {
+                "method": method,
                 "threshold": value,
                 "trades": summary.get("trades", 0),
                 "win_rate": summary.get("win_rate", 0.0),
@@ -199,3 +234,23 @@ def threshold_sweep(
         )
 
     return pd.DataFrame(rows).sort_values("threshold").reset_index(drop=True)
+
+
+def compare_calibration_methods(
+    predictions: pd.DataFrame,
+    config: BacktestConfig,
+    thresholds: Iterable[float],
+    bins: int = 10,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    sweeps = [
+        threshold_sweep(predictions, config, thresholds, method=method)
+        for method in CALIBRATION_METHODS
+    ]
+    sweep_df = pd.concat(sweeps, ignore_index=True)
+
+    calibration_df = pd.concat(
+        [calibration_table(predictions, bins=bins, method=m) for m in CALIBRATION_METHODS],
+        ignore_index=True,
+    )
+    method_metrics = calibration_method_summary(predictions, bins=bins)
+    return sweep_df, calibration_df, method_metrics

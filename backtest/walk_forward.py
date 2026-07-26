@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -35,16 +34,13 @@ def run_walk_forward_backtest(
     test_bars: int = 2000,
     step_bars: int | None = None,
     purge_bars: int | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
-    """Run an expanding/rolling walk-forward backtest.
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    """Run rolling walk-forward training/testing and export all OOS predictions.
 
-    Each fold:
-    1. trains only on bars strictly before the test window;
-    2. purges at least `horizon` bars between train and test;
-    3. predicts only the future test window;
-    4. carries equity forward across folds.
-
-    Models are fitted in memory and are not written to disk.
+    Each fold trains only on earlier bars, uses a purge gap of at least the
+    label horizon, and predicts only its future test window. The returned
+    predictions frame keeps every test OHLC row so threshold replay can use the
+    same future bars while probabilities remain strictly out-of-sample.
     """
     if train_bars < 2000:
         raise ValueError("train_bars must be at least 2000")
@@ -72,6 +68,7 @@ def run_walk_forward_backtest(
         raise ValueError("Not enough bars for one walk-forward fold")
 
     all_trades: list[dict[str, Any]] = []
+    all_predictions: list[pd.DataFrame] = []
     fold_rows: list[dict[str, Any]] = []
     balance = backtest_config.initial_balance
     fold_id = 0
@@ -87,7 +84,7 @@ def run_walk_forward_backtest(
         train_slice = train_slice.dropna(
             subset=FEATURE_COLUMNS + ["buy_win", "sell_win"]
         )
-        test_slice = featured.iloc[test_start:test_end].copy()
+        test_slice = featured.iloc[test_start:test_end].copy().reset_index(drop=True)
 
         if len(train_slice) < 1500:
             test_start += step_bars
@@ -109,11 +106,36 @@ def run_walk_forward_backtest(
             valid_local_indices < len(test_slice) - backtest_config.horizon - 1
         ]
 
+        # Keep the entire test window for exact trade replay at alternate thresholds.
+        test_export = test_slice.copy()
+        test_export["fold"] = fold_id
+        test_export["local_index"] = np.arange(len(test_export), dtype=int)
+        test_export["global_index"] = test_start + test_export["local_index"]
+        test_export["buy_probability"] = np.nan
+        test_export["sell_probability"] = np.nan
+        test_export["buy_win"] = np.nan
+        test_export["sell_win"] = np.nan
+
+        test_labeled = create_tp_sl_labels(
+            test_slice,
+            horizon=backtest_config.horizon,
+            take_profit_pct=backtest_config.take_profit_pct,
+            stop_loss_pct=backtest_config.stop_loss_pct,
+        )
+        if not test_labeled.empty:
+            label_count = len(test_labeled)
+            test_export.loc[: label_count - 1, "buy_win"] = test_labeled["buy_win"].to_numpy()
+            test_export.loc[: label_count - 1, "sell_win"] = test_labeled["sell_win"].to_numpy()
+
         fold_trades: list[dict[str, Any]] = []
         if len(valid_local_indices):
             x_test = test_slice.iloc[valid_local_indices][FEATURE_COLUMNS]
             buy_prob = buy_model.predict_proba(x_test)[:, 1]
             sell_prob = sell_model.predict_proba(x_test)[:, 1]
+
+            test_export.loc[valid_local_indices, "buy_probability"] = buy_prob
+            test_export.loc[valid_local_indices, "sell_probability"] = sell_prob
+
             probs = {
                 int(local_idx): (float(b), float(s))
                 for local_idx, b, s in zip(valid_local_indices, buy_prob, sell_prob)
@@ -149,8 +171,15 @@ def run_walk_forward_backtest(
                 balance = trade.balance_after
                 local_i = exit_local + 1
 
+        all_predictions.append(test_export)
+
         fold_df = pd.DataFrame(fold_trades)
-        fold_summary = _summary(fold_df, balance if fold_df.empty else float(fold_df.iloc[0]["balance_after"] - fold_df.iloc[0]["net_pnl"]))
+        fold_initial = (
+            balance
+            if fold_df.empty
+            else float(fold_df.iloc[0]["balance_after"] - fold_df.iloc[0]["net_pnl"])
+        )
+        fold_summary = _summary(fold_df, fold_initial)
         fold_rows.append(
             {
                 "fold": fold_id,
@@ -173,6 +202,7 @@ def run_walk_forward_backtest(
 
     trades_df = pd.DataFrame(all_trades)
     folds_df = pd.DataFrame(fold_rows)
+    predictions_df = pd.concat(all_predictions, ignore_index=True) if all_predictions else pd.DataFrame()
 
     if trades_df.empty:
         equity_df = pd.DataFrame(
@@ -195,4 +225,4 @@ def run_walk_forward_backtest(
         }
     )
 
-    return trades_df, equity_df, folds_df, summary
+    return trades_df, equity_df, folds_df, predictions_df, summary

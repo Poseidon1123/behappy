@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ai.predictor import AIPredictor, ModelNotReadyError
 from mt5.market_data import MarketData
 from mt5.mt5_connector import MT5Connector
 
@@ -52,15 +53,18 @@ class MainWindow(QMainWindow):
         self.config = config
         trading = config.get("trading", {})
         risk = config.get("risk", {})
+        ai_cfg = config.get("ai", {})
 
         self.symbol = str(trading.get("symbol", "XAUUSD.sc"))
         self.timeframe = str(trading.get("timeframe", "M15"))
-        self.bars = int(trading.get("bars", 100))
+        self.bars = int(trading.get("bars", 300))
         self.risk_cfg = risk
 
         self.connector = MT5Connector()
         self.market = MarketData()
+        self.predictor = AIPredictor(str(ai_cfg.get("model_path", "models/xauusd_m15_model.joblib")))
         self.bot_running = False
+        self._model_warning_shown = False
 
         self.setWindowTitle("AI MT5 Trading Bot - HMI")
         self.resize(1440, 900)
@@ -68,6 +72,7 @@ class MainWindow(QMainWindow):
         pg.setConfigOptions(antialias=True)
 
         self._build_ui()
+        self._update_model_status()
         self._connect_mt5()
 
         self.timer = QTimer(self)
@@ -160,12 +165,11 @@ class MainWindow(QMainWindow):
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
-        ai_group = QGroupBox("AI signal preview")
+        ai_group = QGroupBox("AI signal — real model")
         ai_layout = QVBoxLayout(ai_group)
-        note = QLabel("Preview heuristic only — real AI model not connected yet")
-        note.setWordWrap(True)
-        note.setStyleSheet("color:#f59e0b;")
-        ai_layout.addWidget(note)
+        self.ai_model_note = QLabel("Checking model...")
+        self.ai_model_note.setWordWrap(True)
+        ai_layout.addWidget(self.ai_model_note)
         self.buy_bar = self._probability_row(ai_layout, "BUY")
         self.sell_bar = self._probability_row(ai_layout, "SELL")
         self.hold_bar = self._probability_row(ai_layout, "HOLD")
@@ -173,6 +177,9 @@ class MainWindow(QMainWindow):
         self.ai_decision.setAlignment(Qt.AlignCenter)
         self.ai_decision.setStyleSheet("font-size:20px; font-weight:800; padding:10px;")
         ai_layout.addWidget(self.ai_decision)
+        self.reload_ai_button = QPushButton("RELOAD AI MODEL")
+        self.reload_ai_button.clicked.connect(self.reload_ai_model)
+        ai_layout.addWidget(self.reload_ai_button)
         layout.addWidget(ai_group)
 
         risk_group = QGroupBox("Risk settings")
@@ -185,14 +192,13 @@ class MainWindow(QMainWindow):
         self.tp_pct = self._double_spin(0.01, 20.0, self.risk_cfg.get("take_profit_pct", 0.6), "%")
         self.buy_threshold = self._double_spin(0.50, 0.99, self.risk_cfg.get("buy_threshold", 0.72), "")
         self.sell_threshold = self._double_spin(0.50, 0.99, self.risk_cfg.get("sell_threshold", 0.72), "")
-        form.addRow("Risk / trade", self.risk_per_trade)
-        form.addRow("Max positions", self.max_positions)
-        form.addRow("Max daily loss", self.daily_loss)
-        form.addRow("Max drawdown", self.max_drawdown)
-        form.addRow("Stop Loss", self.sl_pct)
-        form.addRow("Take Profit", self.tp_pct)
-        form.addRow("BUY threshold", self.buy_threshold)
-        form.addRow("SELL threshold", self.sell_threshold)
+        for label, widget in [
+            ("Risk / trade", self.risk_per_trade), ("Max positions", self.max_positions),
+            ("Max daily loss", self.daily_loss), ("Max drawdown", self.max_drawdown),
+            ("Stop Loss", self.sl_pct), ("Take Profit", self.tp_pct),
+            ("BUY threshold", self.buy_threshold), ("SELL threshold", self.sell_threshold),
+        ]:
+            form.addRow(label, widget)
         layout.addWidget(risk_group)
 
         controls = QGroupBox("Bot control")
@@ -212,22 +218,14 @@ class MainWindow(QMainWindow):
         return panel
 
     def _probability_row(self, layout: QVBoxLayout, name: str) -> QProgressBar:
-        label = QLabel(name)
-        bar = QProgressBar()
-        bar.setRange(0, 100)
-        bar.setValue(0)
-        bar.setFormat("%p%")
-        layout.addWidget(label)
+        layout.addWidget(QLabel(name))
+        bar = QProgressBar(); bar.setRange(0, 100); bar.setValue(0); bar.setFormat("%p%")
         layout.addWidget(bar)
         return bar
 
     def _double_spin(self, minimum: float, maximum: float, value: float, suffix: str) -> QDoubleSpinBox:
-        spin = QDoubleSpinBox()
-        spin.setRange(minimum, maximum)
-        spin.setDecimals(2)
-        spin.setSingleStep(0.05)
-        spin.setValue(float(value))
-        spin.setSuffix(suffix)
+        spin = QDoubleSpinBox(); spin.setRange(minimum, maximum); spin.setDecimals(2)
+        spin.setSingleStep(0.05); spin.setValue(float(value)); spin.setSuffix(suffix)
         return spin
 
     def _build_positions_panel(self) -> QGroupBox:
@@ -245,11 +243,32 @@ class MainWindow(QMainWindow):
     def _build_log_panel(self) -> QGroupBox:
         group = QGroupBox("System log")
         layout = QVBoxLayout(group)
-        self.log_box = QTextEdit()
-        self.log_box.setReadOnly(True)
-        self.log_box.setMaximumHeight(190)
+        self.log_box = QTextEdit(); self.log_box.setReadOnly(True); self.log_box.setMaximumHeight(190)
         layout.addWidget(self.log_box)
         return group
+
+    def _update_model_status(self) -> None:
+        if self.predictor.ready:
+            meta = self.predictor.metadata()
+            accuracy = meta.get("test_accuracy")
+            text = "REAL AI MODEL LOADED"
+            if accuracy is not None:
+                text += f"  •  test accuracy {float(accuracy):.1%}"
+            self.ai_model_note.setText(text)
+            self.ai_model_note.setStyleSheet("color:#22c55e; font-weight:700;")
+        else:
+            self.ai_model_note.setText("MODEL NOT TRAINED — run: python train_ai.py")
+            self.ai_model_note.setStyleSheet("color:#f59e0b; font-weight:700;")
+
+    def reload_ai_model(self) -> None:
+        try:
+            loaded = self.predictor.load_if_available()
+            self._model_warning_shown = False
+            self._update_model_status()
+            self._log("AI model reloaded" if loaded else "AI model file is still missing")
+            self.refresh_data()
+        except Exception as exc:
+            self._log(f"AI reload error: {exc}")
 
     def _connect_mt5(self) -> None:
         try:
@@ -273,27 +292,23 @@ class MainWindow(QMainWindow):
             self.profit_value[1].setText(f"{account.profit:.2f} {account.currency}")
 
             tick = self.market.get_tick(self.symbol)
-            self.bid_value[1].setText(str(tick["bid"]))
-            self.ask_value[1].setText(str(tick["ask"]))
+            self.bid_value[1].setText(str(tick["bid"])); self.ask_value[1].setText(str(tick["ask"]))
             self.spread_value[1].setText(str(round(tick["spread_price"], 5)))
 
             df = self.market.get_bars(
-                symbol=self.symbol,
-                timeframe=self.timeframe,
-                count=max(60, min(self.bars, 300)),
-                include_current_bar=False,
+                symbol=self.symbol, timeframe=self.timeframe,
+                count=max(100, min(self.bars, 1000)), include_current_bar=False,
             )
             self._update_chart(df)
             self._update_candle_table(df.tail(12))
             self._update_positions()
-            self._update_ai_preview(df)
+            self._update_ai_prediction(df)
         except Exception as exc:
             self._log(f"Refresh error: {exc}")
 
     def _update_chart(self, df) -> None:
         recent = df.tail(60)
-        x = np.arange(len(recent))
-        y = recent["close"].astype(float).to_numpy()
+        x = np.arange(len(recent)); y = recent["close"].astype(float).to_numpy()
         self.price_curve.setData(x, y)
         if len(y):
             self.chart.setTitle(f"{self.symbol} {self.timeframe}  |  Last close: {y[-1]:.5f}")
@@ -301,65 +316,51 @@ class MainWindow(QMainWindow):
     def _update_candle_table(self, df) -> None:
         self.candle_table.setRowCount(len(df))
         for r, (_, row) in enumerate(df.iterrows()):
-            values = [
-                str(row["time"]), row["open"], row["high"], row["low"],
-                row["close"], row["tick_volume"], row["spread"],
-            ]
+            values = [str(row["time"]), row["open"], row["high"], row["low"], row["close"], row["tick_volume"], row["spread"]]
             for c, value in enumerate(values):
                 self.candle_table.setItem(r, c, QTableWidgetItem(str(value)))
 
     def _update_positions(self) -> None:
-        positions = mt5.positions_get()
-        if positions is None:
-            positions = []
+        positions = mt5.positions_get() or []
         self.positions_table.setRowCount(len(positions))
         for r, pos in enumerate(positions):
             side = "BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL"
-            values = [pos.ticket, pos.symbol, side, pos.volume, pos.price_open,
-                      pos.price_current, pos.sl, pos.tp, pos.profit]
+            values = [pos.ticket, pos.symbol, side, pos.volume, pos.price_open, pos.price_current, pos.sl, pos.tp, pos.profit]
             for c, value in enumerate(values):
                 self.positions_table.setItem(r, c, QTableWidgetItem(str(value)))
 
-    def _update_ai_preview(self, df) -> None:
-        closes = df["close"].astype(float)
-        if len(closes) < 20:
+    def _update_ai_prediction(self, df) -> None:
+        try:
+            prediction = self.predictor.predict(df)
+        except ModelNotReadyError as exc:
+            self.buy_bar.setValue(0); self.sell_bar.setValue(0); self.hold_bar.setValue(0)
+            self.ai_decision.setText("Decision: MODEL NOT READY")
+            if not self._model_warning_shown:
+                self._log(str(exc)); self._model_warning_shown = True
             return
-        fast = closes.tail(5).mean()
-        slow = closes.tail(20).mean()
-        volatility = max(closes.tail(20).std(), 1e-9)
-        score = np.clip((fast - slow) / volatility, -2.0, 2.0)
-        buy = 1.0 / (1.0 + np.exp(-2.0 * score))
-        sell = 1.0 - buy
-        confidence = abs(buy - sell)
-        hold = max(0.0, 0.55 - confidence)
-        total = buy + sell + hold
-        buy, sell, hold = buy / total, sell / total, hold / total
 
-        self.buy_bar.setValue(round(buy * 100))
-        self.sell_bar.setValue(round(sell * 100))
-        self.hold_bar.setValue(round(hold * 100))
+        self.buy_bar.setValue(round(prediction.buy * 100))
+        self.sell_bar.setValue(round(prediction.sell * 100))
+        self.hold_bar.setValue(round(prediction.hold * 100))
 
         decision = "HOLD"
-        if buy >= self.buy_threshold.value():
+        if prediction.buy >= self.buy_threshold.value() and prediction.buy >= prediction.sell:
             decision = "BUY"
-        elif sell >= self.sell_threshold.value():
+        elif prediction.sell >= self.sell_threshold.value() and prediction.sell > prediction.buy:
             decision = "SELL"
-        self.ai_decision.setText(f"Decision: {decision}")
+        self.ai_decision.setText(f"Decision: {decision}  |  model raw: {prediction.decision}")
 
     def start_bot(self) -> None:
         self.bot_running = True
         self.bot_status_label.setText("MONITOR RUNNING")
         self.bot_status_label.setStyleSheet("color:#22c55e; font-weight:700;")
-        self.start_button.setEnabled(False)
-        self.stop_button.setEnabled(True)
+        self.start_button.setEnabled(False); self.stop_button.setEnabled(True)
         self._log("Monitoring started. Order execution remains disabled.")
 
     def stop_bot(self) -> None:
         self.bot_running = False
-        self.bot_status_label.setText("BOT STOPPED")
-        self.bot_status_label.setStyleSheet("")
-        self.start_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
+        self.bot_status_label.setText("BOT STOPPED"); self.bot_status_label.setStyleSheet("")
+        self.start_button.setEnabled(True); self.stop_button.setEnabled(False)
         self._log("Monitoring stopped")
 
     def _log(self, message: str) -> None:

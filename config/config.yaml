@@ -20,5 +20,18 @@ ai_training:
   stop_loss_pct: 0.003
   validation_fraction: 0.20
 
+backtest:
+  bars: 10000
+  initial_balance: 10000.0
+  fixed_lot: 0.01
+  buy_threshold: 0.72
+  sell_threshold: 0.72
+  min_probability_edge: 0.08
+  horizon: 8
+  take_profit_pct: 0.006
+  stop_loss_pct: 0.003
+  slippage_points: 2.0
+  commission_per_lot_round_turn: 0.0
+
 application:
   log_level: "INFO"

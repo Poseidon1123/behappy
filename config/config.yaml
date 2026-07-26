@@ -99,5 +99,24 @@ nested_walk_forward:
     - 0.75
     - 0.80
 
+nested_robust:
+  bars: 30000
+  outer_train_bars: 12000
+  inner_validation_bars: 1500
+  inner_splits: 3
+  outer_test_bars: 2000
+  step_bars: 2000
+  purge_bars: 8
+  min_total_inner_trades: 45
+  thresholds:
+    - 0.50
+    - 0.55
+    - 0.60
+    - 0.65
+    - 0.70
+    - 0.72
+    - 0.75
+    - 0.80
+
 application:
   log_level: "INFO"

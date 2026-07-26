@@ -81,5 +81,23 @@ walk_forward:
 
   calibration_bins: 10
 
+nested_walk_forward:
+  bars: 30000
+  outer_train_bars: 12000
+  inner_validation_bars: 2000
+  outer_test_bars: 2000
+  step_bars: 2000
+  purge_bars: 8
+  min_inner_trades: 20
+  threshold_candidates:
+    - 0.50
+    - 0.55
+    - 0.60
+    - 0.65
+    - 0.70
+    - 0.72
+    - 0.75
+    - 0.80
+
 application:
   log_level: "INFO"

@@ -6,7 +6,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from data.feature_engineering import FEATURE_COLUMNS, build_features
+from data.feature_engineering import BUY_FEATURE_COLUMNS, SELL_FEATURE_COLUMNS, build_features
 
 
 class AIPredictor:
@@ -47,8 +47,11 @@ class AIPredictor:
             }
 
         featured = build_features(raw_df)
-        latest = featured[FEATURE_COLUMNS].dropna().tail(1)
-        if latest.empty:
+        buy_cols = self.meta.get("buy_feature_columns", BUY_FEATURE_COLUMNS) if self.meta else BUY_FEATURE_COLUMNS
+        sell_cols = self.meta.get("sell_feature_columns", SELL_FEATURE_COLUMNS) if self.meta else SELL_FEATURE_COLUMNS
+
+        valid = featured[buy_cols + [c for c in sell_cols if c not in buy_cols]].dropna().tail(1)
+        if valid.empty:
             return {
                 "buy_probability": 0.0,
                 "sell_probability": 0.0,
@@ -56,12 +59,13 @@ class AIPredictor:
                 "status": "NOT_ENOUGH_DATA",
             }
 
-        # These are independent probabilities: P(BUY reaches TP before SL)
-        # and P(SELL reaches TP before SL), based on the separately trained models.
-        buy = float(self.buy_model.predict_proba(latest)[:, 1][0])
-        sell = float(self.sell_model.predict_proba(latest)[:, 1][0])
+        idx = valid.index[-1]
+        buy_row = featured.loc[[idx], buy_cols]
+        sell_row = featured.loc[[idx], sell_cols]
 
-        # HOLD is a display/decision aid, not a third trained class.
+        buy = float(self.buy_model.predict_proba(buy_row)[:, 1][0])
+        sell = float(self.sell_model.predict_proba(sell_row)[:, 1][0])
+
         edge = max(buy, sell)
         conflict = min(buy, sell)
         hold = float(np.clip((1.0 - edge) + 0.25 * conflict, 0.0, 1.0))
@@ -70,5 +74,5 @@ class AIPredictor:
             "buy_probability": buy,
             "sell_probability": sell,
             "hold_probability": hold,
-            "status": "READY",
+            "status": "READY_MTF",
         }

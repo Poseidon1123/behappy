@@ -1,0 +1,7 @@
+trading:
+  symbol: "XAUUSD.sc"
+  timeframe: "M15"
+  bars: 100
+
+application:
+  log_level: "INFO"

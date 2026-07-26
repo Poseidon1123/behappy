@@ -20,47 +20,54 @@ Python foundation for an AI-assisted MetaTrader 5 trading system.
 - Risk settings and BUY/SELL thresholds.
 - System log and monitoring controls.
 
-### Step 3 - Real AI pipeline
+### Step 3 - Multi-Timeframe AI pipeline v2
 
-- Collect XAUUSD M15 closed candles directly from MT5.
-- Causal feature engineering: EMA spread, ATR ratio, volatility, momentum, RSI, candle shape, range position and session/time features.
-- Separate BUY and SELL binary labels using first-touch TP/SL logic over future candles.
-- Purged chronological train/validation split to reduce look-ahead leakage.
-- Ambiguous same-bar TP/SL samples are excluded from training.
-- Separate HistGradientBoostingClassifier models for BUY and SELL.
-- Validation report with accuracy, precision, recall, F1 and ROC-AUC.
-- Saved models are loaded by the HMI and used for real BUY/SELL probability display.
+The current AI architecture is `multi_timeframe_m15_h1_regime_side_specific_v2`.
 
-> BUY probability means the model-estimated probability that a long trade reaches the configured TP before SL within the training horizon. SELL is defined symmetrically. HOLD is a derived no-edge indicator, not a third trained class.
+- M15 remains the execution/signal timeframe.
+- Completed H1 candles are aggregated causally from closed M15 bars.
+- MT5 candle timestamps are treated as bar-open times; H1 context is aligned using M15 close time (`time + 15 minutes`) to avoid boundary leakage.
+- H1 context includes EMA20/EMA50 spread, EMA slope, RSI14, ATR ratio, ADX14, volatility and range position.
+- Market-regime flags include trending, ranging, high-volatility and low-volatility states.
+- BUY and SELL use separate feature lists instead of being forced to share an identical feature set.
+- BUY-specific context includes lower wick, bullish body, H1 uptrend and M15/H1 bullish alignment.
+- SELL-specific context includes upper wick, bearish body, H1 downtrend and M15/H1 bearish alignment.
+- Separate BUY and SELL binary labels still use first-touch TP/SL logic.
+- Purged chronological validation and ambiguous same-bar TP/SL exclusion remain enabled.
+- Saved model metadata records the architecture and each side's exact feature list.
+
+> BUY probability estimates whether a long trade reaches TP before SL within the configured horizon. SELL is defined symmetrically. HOLD is a derived no-edge state, not a third trained class.
 
 ### Step 4 - Backtester v1
 
-- Uses the trained BUY/SELL models on historical closed candles.
+- Uses the trained side-specific BUY/SELL models.
 - Signal is generated from a completed candle and entry occurs at the next candle open.
 - Only one simulated position is open at a time.
 - First-touch TP/SL logic with a time-based exit at the configured horizon.
 - Same-bar TP+SL during backtest is handled conservatively as an SL.
 - Deducts observed MT5 spread, configured round-trip slippage and commission per lot.
 - Uses MT5 `point` and `trade_contract_size` for P/L and transaction-cost calculations.
-- Produces trade log, equity curve and summary statistics.
 
 ### Step 5 - Walk-Forward validation and probability calibration
 
-- Retrains a fresh BUY/SELL model pair in every fold.
-- Each test fold is strictly future/out-of-sample relative to its fitting and calibration windows.
-- Uses two purge gaps: one between model fitting and calibration, and another between calibration and test.
+- Retrains a fresh side-specific BUY/SELL model pair in every fold.
+- Each test fold is future/out-of-sample relative to fitting and calibration windows.
+- Uses purge gaps between fitting, calibration and test.
 - Fits Sigmoid and Isotonic calibration only on historical calibration bars.
-- Exports raw, sigmoid and isotonic BUY/SELL probabilities for the identical future test rows.
-- Runs separate threshold ranges for raw vs calibrated probabilities.
-- Reports BUY/SELL performance separately.
-- Reports Brier Score and Expected Calibration Error (ECE).
-- Adds cost-adjusted break-even probability and calibrated edge-margin analysis.
+- Exports raw, sigmoid and isotonic probabilities for identical future test rows.
+- Reports threshold sweeps, BUY/SELL performance, Brier Score, ECE and cost-adjusted break-even analysis.
 
-### Step 6 - Final Untouched Holdout Test
+Run development validation with:
 
-The final holdout test is deliberately isolated from development tuning.
+```bash
+python run_walk_forward.py
+```
 
-Locked candidates are hard-coded in `backtest/holdout.py`:
+### Step 6 - Final Untouched Holdout Test (v1 consumed)
+
+The previously registered v1 holdout was already run and inspected. Its historical period must now be treated as **consumed**.
+
+The old locked candidates were:
 
 ```text
 raw 0.55
@@ -69,46 +76,22 @@ raw 0.80
 sigmoid 0.20
 ```
 
-No threshold sweep or optimizer is allowed inside the final holdout runner.
+Do **not** rerun that same 2024 holdout to choose features, thresholds or hyperparameters for the new M15+H1 v2 architecture. Doing so would turn the final holdout into development data.
 
-Because the most recent 30,000-50,000 bars were already used during development, the final holdout runner does **not** reuse them. By default it downloads 75,000 bars, excludes the newest 50,000 completely, then constructs one older virgin chronological block:
+For v2:
 
-```text
-12,000 model-fit bars
--> 8 purge bars
--> 2,000 calibration bars
--> 8 purge bars
--> 5,000 FINAL HOLDOUT bars
--> newest 50,000 development bars excluded entirely
-```
+1. Develop and compare the new architecture using walk-forward data only.
+2. Freeze the selected v2 architecture and candidate rules.
+3. Validate later on a genuinely new untouched period that was not used to design v2.
 
-Run it once when you are ready to consume that holdout:
-
-```bash
-python run_final_holdout.py
-```
-
-Outputs:
-
-```text
-reports/final_holdout/manifest.json
-reports/final_holdout/predictions.csv
-reports/final_holdout/candidate_results.csv
-reports/final_holdout/candidate_side_results.csv
-reports/final_holdout/trades_raw_055.csv
-reports/final_holdout/trades_raw_060.csv
-reports/final_holdout/trades_raw_080.csv
-reports/final_holdout/trades_sigmoid_020.csv
-```
-
-`manifest.json` stores the exact train/calibration/holdout timestamps, frozen candidate definitions, trading-cost assumptions and a SHA-256 lock hash. Once this holdout has been run and inspected, treat it as consumed: do not retune the model or thresholds against it and still call it final/untouched.
+The existing `run_final_holdout.py` remains for historical reproducibility, not for v2 model selection.
 
 ## Requirements
 
 - Windows with MetaTrader 5 desktop installed.
 - Python 3.10+ recommended.
 - MT5 terminal open and logged in.
-- Enough historical M15 bars available in MT5 for training/backtesting.
+- Enough historical M15 bars available for H1 warm-up, training and backtesting.
 
 ## Install
 
@@ -127,6 +110,8 @@ Edit `config/config.yaml` so `trading.symbol` exactly matches the broker symbol 
 python train_ai.py
 ```
 
+Training now creates side-specific M15+H1 models and stores their exact feature lists in `models/model_meta.joblib`.
+
 ## Run Backtester v1
 
 ```bash
@@ -139,7 +124,7 @@ python run_backtest.py
 python run_walk_forward.py
 ```
 
-The walk-forward reports are saved under `reports/walk_forward_*.csv/json` and include raw/calibrated probabilities, threshold sweeps, calibration quality and cost-adjusted edge analysis.
+Reports are saved under `reports/walk_forward_*.csv/json`.
 
 ## Run the HMI
 
@@ -147,12 +132,12 @@ The walk-forward reports are saved under `reports/walk_forward_*.csv/json` and i
 python main.py
 ```
 
-After training, the header should show `AI MODEL READY`. If the HMI was already open, click `RELOAD AI MODEL`.
+After retraining, reload the AI model from the HMI. The predictor status for the new architecture is `READY_MTF`.
 
 ## Important validation note
 
-Backtester v1 can be partly in-sample if its data overlaps model training. Walk-forward validation is the main development test. The final untouched holdout is a one-time confirmation test for pre-registered candidates; it should not become another optimization dataset after results are seen.
+Backtester v1 can be partly in-sample if its data overlaps model training. Walk-forward validation is the primary development test. A final holdout should be consumed only once for a frozen candidate and must not be recycled for feature selection.
 
 ## Safety
 
-The project is still read-only. The monitoring button does not send, modify or close orders. Live order execution should only be added after validation and dedicated risk controls have been verified on demo data.
+The project remains read-only. Monitoring does not send, modify or close orders. Live execution should only be added after the new architecture passes walk-forward validation, a new untouched confirmation period, and dedicated demo-tested risk controls.

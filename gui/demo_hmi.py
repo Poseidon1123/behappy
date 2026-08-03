@@ -9,7 +9,7 @@ import MetaTrader5 as mt5
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QProcess, QSettings, QTimer, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QTableWidget,
@@ -65,7 +66,13 @@ class DemoHMI(QMainWindow):
         self.ui_settings = QSettings("Behappy", "v51-demo-hmi")
 
         self.setWindowTitle("v5.1 XAUUSD Demo Bot — Control HMI")
-        self.resize(1540, 940)
+        self.setMinimumSize(900, 600)
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            self.resize(1400, 850)
+        else:
+            available = screen.availableGeometry()
+            self.resize(min(1540, available.width()), min(940, available.height()))
         self.setStyleSheet(APP_STYLE)
         pg.setConfigOptions(antialias=True)
         self._build_ui()
@@ -80,6 +87,7 @@ class DemoHMI(QMainWindow):
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
         root.setContentsMargins(14, 12, 14, 12)
+        root.setSpacing(6)
 
         header = QHBoxLayout()
         title = QLabel("v5.1 DEMO TRADING HMI")
@@ -262,7 +270,14 @@ class DemoHMI(QMainWindow):
         buttons.addWidget(self.refresh_button, 1, 1)
         layout.addWidget(control)
         layout.addStretch()
-        return panel
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(panel)
+        scroll.setMinimumSize(360, 0)
+        return scroll
 
     def _spin(self, minimum: float, maximum: float, value: float, step: float, decimals: int) -> QDoubleSpinBox:
         spin = QDoubleSpinBox()

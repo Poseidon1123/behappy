@@ -47,7 +47,7 @@ def main() -> None:
         contract_size = float(info.trade_contract_size)
 
     cfg = BacktestConfig(
-        initial_balance=float(backtest.get("initial_balance", 10000.0)),
+        initial_balance=float(backtest.get("initial_balance", 1000.0)),
         fixed_lot=float(backtest.get("fixed_lot", 0.01)),
         buy_threshold=float(backtest.get("buy_threshold", 0.72)),
         sell_threshold=float(backtest.get("sell_threshold", 0.72)),

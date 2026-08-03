@@ -287,6 +287,8 @@ def _replay_v41(
     outer_fold: int,
     sell_architecture: str,
     gate_enabled: bool,
+    gate_sides: frozenset[str] | None = None,
+    meta_version: str = "v4.1_economic",
 ) -> tuple[list[dict[str, Any]], float]:
     common = sorted(set(buy_prob).intersection(sell_prob))
     if not common:
@@ -312,7 +314,8 @@ def _replay_v41(
             continue
 
         meta_probability = 1.0
-        if gate_enabled:
+        side_gate_enabled = gate_enabled and (gate_sides is None or side in gate_sides)
+        if side_gate_enabled:
             model = buy_meta_model if side == "BUY" else sell_meta_model
             if model is None:
                 i += 1
@@ -351,10 +354,15 @@ def _replay_v41(
                 "sell_architecture": sell_architecture,
                 "buy_threshold": buy_threshold,
                 "sell_threshold": sell_threshold,
-                "meta_gate_enabled": gate_enabled,
+                "meta_gate_enabled": side_gate_enabled,
+                "meta_gate_sides": (
+                    "NONE" if not gate_enabled
+                    else "ALL" if gate_sides is None
+                    else ",".join(sorted(gate_sides))
+                ),
                 "meta_probability": meta_probability,
                 "meta_gate_threshold": meta_gate_threshold,
-                "meta_version": "v4.1_economic",
+                "meta_version": meta_version,
             }
         )
         rows.append(record)

@@ -7,7 +7,7 @@ import MetaTrader5 as mt5
 import yaml
 
 from backtest.engine import BacktestConfig
-from backtest.meta_labeling_v41 import run_meta_labeling_walk_forward_v41
+from backtest.meta_labeling_v42 import run_meta_labeling_walk_forward_v42
 from mt5.market_data import MarketData
 from mt5.mt5_connector import MT5Connector
 
@@ -22,7 +22,7 @@ def main() -> None:
     trading = config.get("trading", {})
     backtest = config.get("backtest", {})
     nested = config.get("nested_robust", {})
-    meta = config.get("meta_labeling_v41", {})
+    meta = config.get("meta_labeling_v42", config.get("meta_labeling_v41", {}))
 
     symbol = str(trading.get("symbol", "XAUUSD.sc"))
     timeframe = str(trading.get("timeframe", "M15"))
@@ -35,10 +35,10 @@ def main() -> None:
         "thresholds", [0.50, 0.55, 0.60, 0.65, 0.70, 0.72, 0.75, 0.80]
     )]
 
-    print(f"Collecting {bars:,} closed bars for v4.1 Economic Meta Gate: {symbol} {timeframe}")
-    print(f"Gate threshold is FIXED at {gate_threshold:.2f}")
-    print(f"Broad OOF harvesting: BUY>={buy_harvest_threshold:.2f}, SELL>={sell_harvest_threshold:.2f}")
-    print("Meta target: realized NET PnL > 0 after spread/slippage/commission")
+    print(f"Collecting {bars:,} closed bars for v4.2 Hybrid SELL Gate: {symbol} {timeframe}")
+    print(f"Initial balance: {float(backtest.get('initial_balance', 1000.0)):.2f}")
+    print(f"SELL gate threshold is FIXED at {gate_threshold:.2f}; BUY gate is disabled")
+    print(f"Broad OOF harvesting retained: BUY>={buy_harvest_threshold:.2f}, SELL>={sell_harvest_threshold:.2f}")
 
     with MT5Connector():
         market = MarketData()
@@ -64,7 +64,7 @@ def main() -> None:
         contract_size=contract_size,
     )
 
-    baseline, gated, folds, meta_training, summary = run_meta_labeling_walk_forward_v41(
+    baseline, v41, v42, folds, meta_training, summary = run_meta_labeling_walk_forward_v42(
         df,
         cfg,
         thresholds=thresholds,
@@ -81,31 +81,42 @@ def main() -> None:
         min_meta_samples=min_meta_samples,
     )
 
-    out = Path("reports/meta_labeling_v4_1")
+    out = Path("reports/meta_labeling_v4_2")
     out.mkdir(parents=True, exist_ok=True)
     baseline.to_csv(out / "baseline_trades.csv", index=False)
-    gated.to_csv(out / "gated_trades.csv", index=False)
+    v41.to_csv(out / "v41_all_gated_trades.csv", index=False)
+    v42.to_csv(out / "v42_hybrid_trades.csv", index=False)
     folds.to_csv(out / "fold_comparison.csv", index=False)
     meta_training.to_csv(out / "meta_training_availability.csv", index=False)
     with (out / "summary.json").open("w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
 
-    print("\nV4.1 ECONOMIC META GATE: BASELINE VS GATED")
-    print(json.dumps({"baseline": summary["baseline"], "gated": summary["gated"]}, indent=2, ensure_ascii=False))
-    print("\nBASELINE BUY / SELL")
-    for row in summary["baseline_sides"]:
-        print(row)
-    print("\nGATED BUY / SELL")
-    for row in summary["gated_sides"]:
-        print(row)
+    print("\nV4.2 HYBRID: BASELINE VS V4.1 ALL-GATED VS V4.2 SELL-ONLY")
+    print(json.dumps(
+        {
+            "baseline": summary["baseline"],
+            "v4.1_all_gated": summary["v41_all_gated"],
+            "v4.2_hybrid": summary["v42_hybrid"],
+        },
+        indent=2,
+        ensure_ascii=False,
+    ))
+    for label, key in (
+        ("BASELINE BUY / SELL", "baseline_sides"),
+        ("V4.1 ALL-GATED BUY / SELL", "v41_sides"),
+        ("V4.2 HYBRID BUY / SELL", "v42_sides"),
+    ):
+        print(f"\n{label}")
+        for row in summary[key]:
+            print(row)
     print("\nFOLD COMPARISON")
     if not folds.empty:
         print(folds.to_string(index=False))
     print("\nMETA TRAINING AVAILABILITY")
     if not meta_training.empty:
         print(meta_training.to_string(index=False))
-    print("\nReports saved under reports/meta_labeling_v4_1/")
-    print("IMPORTANT: development walk-forward only; consumed holdouts/forward windows remain off-limits for v4.1 confirmation.")
+    print("\nReports saved under reports/meta_labeling_v4_2/")
+    print("IMPORTANT: development walk-forward only; consumed confirmation windows remain off-limits.")
 
 
 if __name__ == "__main__":

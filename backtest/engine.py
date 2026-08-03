@@ -17,7 +17,7 @@ from data.feature_engineering import (
 
 @dataclass(frozen=True)
 class BacktestConfig:
-    initial_balance: float = 10_000.0
+    initial_balance: float = 1_000.0
     fixed_lot: float = 0.01
     buy_threshold: float = 0.72
     sell_threshold: float = 0.72

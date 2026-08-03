@@ -142,6 +142,36 @@ reports/meta_labeling_v4_1/meta_training_availability.csv
 
 The key test is whether v4.1 can improve Profit Factor and expectancy while preserving enough trades across multiple outer folds. Previously inspected holdouts and the June-July 2026 forward-confirmation window remain consumed and are not valid clean confirmations for v4.1.
 
+### Step 13 - v4.2 Hybrid Side-Specific Gate
+v4.2 keeps BUY signals from the primary model unfiltered and applies the v4.1
+economic meta gate only to SELL candidates. It independently replays three
+strategies on every outer fold so skipped SELL trades can expose later signals:
+
+```text
+v3.1 baseline     -> no gate
+v4.1 comparison   -> BUY and SELL gated
+v4.2 hybrid       -> BUY direct, SELL gated
+```
+
+The default simulated initial balance is now `1000.0`. Fixed lot remains
+`0.01`, so absolute trade PnL is unchanged while balance and drawdown
+percentages reflect the smaller account.
+
+Run:
+```bash
+python run_meta_labeling_v42.py
+```
+
+Outputs:
+```text
+reports/meta_labeling_v4_2/summary.json
+reports/meta_labeling_v4_2/baseline_trades.csv
+reports/meta_labeling_v4_2/v41_all_gated_trades.csv
+reports/meta_labeling_v4_2/v42_hybrid_trades.csv
+reports/meta_labeling_v4_2/fold_comparison.csv
+reports/meta_labeling_v4_2/meta_training_availability.csv
+```
+
 ## Install
 ```bash
 python -m venv .venv
@@ -161,11 +191,12 @@ python run_nested_robust.py
 python run_forward_confirmation.py
 python run_meta_labeling.py
 python run_meta_labeling_v41.py
+python run_meta_labeling_v42.py
 python main.py
 ```
 
 ## Validation policy
-Ordinary walk-forward and feature ablation are development/model-selection analyses. Nested v3/v3.1 and v4/v4.1 meta-labeling use stricter outer-test separation, but a genuinely new untouched period is still required after a final rule set is frozen. Previously inspected holdouts remain consumed.
+Ordinary walk-forward and feature ablation are development/model-selection analyses. Nested v3/v3.1 and v4/v4.1/v4.2 meta-labeling use stricter outer-test separation, but a genuinely new untouched period is still required after a final rule set is frozen. Previously inspected holdouts remain consumed.
 
 ## Safety
 The project remains read-only. Monitoring does not send, modify or close orders. Live execution should only be added after a stable nested result, a new untouched confirmation period and dedicated demo-tested risk controls.

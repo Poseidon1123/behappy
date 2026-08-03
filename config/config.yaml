@@ -22,7 +22,7 @@ ai_training:
 
 backtest:
   bars: 10000
-  initial_balance: 10000.0
+  initial_balance: 1000.0
   fixed_lot: 0.01
   buy_threshold: 0.72
   sell_threshold: 0.72
@@ -124,6 +124,13 @@ meta_labeling:
   min_meta_samples: 120
 
 meta_labeling_v41:
+  bars: 30000
+  gate_threshold: 0.55
+  buy_harvest_threshold: 0.45
+  sell_harvest_threshold: 0.45
+  min_meta_samples: 250
+
+meta_labeling_v42:
   bars: 30000
   gate_threshold: 0.55
   buy_harvest_threshold: 0.45

@@ -8,7 +8,7 @@ from pathlib import Path
 import MetaTrader5 as mt5
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QProcess, QTimer, Qt
+from PySide6.QtCore import QProcess, QSettings, QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -62,6 +62,7 @@ class DemoHMI(QMainWindow):
         self.process_mode: str | None = None
         self.building_timeframe: str | None = None
         self.last_event_line = ""
+        self.ui_settings = QSettings("Behappy", "v51-demo-hmi")
 
         self.setWindowTitle("v5.1 XAUUSD Demo Bot — Control HMI")
         self.resize(1540, 940)
@@ -111,13 +112,29 @@ class DemoHMI(QMainWindow):
         upper.addWidget(self._market_panel())
         upper.addWidget(self._control_panel())
         upper.setSizes([1000, 480])
-        root.addWidget(upper, 3)
 
         tabs = QTabWidget()
         tabs.addTab(self._positions_table(), "Open positions")
         tabs.addTab(self._deals_table(), "Bot deal history")
         tabs.addTab(self._events_panel(), "AI / execution events")
-        root.addWidget(tabs, 2)
+
+        self.main_splitter = QSplitter(Qt.Vertical)
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.setHandleWidth(8)
+        self.main_splitter.setStyleSheet(
+            "QSplitter::handle{background:#334155;border-radius:3px;margin:1px;}"
+            "QSplitter::handle:hover{background:#38bdf8;}"
+        )
+        self.main_splitter.addWidget(upper)
+        self.main_splitter.addWidget(tabs)
+        self.main_splitter.handle(1).setToolTip(
+            "Drag up/down to resize market controls and trade/event tables"
+        )
+        self.main_splitter.setSizes([570, 300])
+        saved_splitter = self.ui_settings.value("main_splitter_state")
+        if saved_splitter is not None:
+            self.main_splitter.restoreState(saved_splitter)
+        root.addWidget(self.main_splitter, 1)
 
     def _card(self, caption: str) -> tuple[QFrame, QLabel]:
         frame = QFrame()
@@ -597,6 +614,7 @@ class DemoHMI(QMainWindow):
         self.log.append(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        self.ui_settings.setValue("main_splitter_state", self.main_splitter.saveState())
         self.stop_bot()
         self.connector.disconnect()
         event.accept()

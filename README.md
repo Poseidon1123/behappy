@@ -172,6 +172,29 @@ reports/meta_labeling_v4_2/fold_comparison.csv
 reports/meta_labeling_v4_2/meta_training_availability.csv
 ```
 
+### Step 14 - Frozen Dataset + Reproducible Selection
+Live MT5 downloads move forward over time, so two runs using the "latest
+30,000 bars" are not directly comparable. Freeze one closed-bar dataset first:
+
+```bash
+python export_mt5_snapshot.py
+```
+
+This creates an untracked CSV plus a JSON manifest containing the exact period,
+row count, broker contract metadata and SHA-256 checksum. Do not edit the CSV.
+
+Run all current candidates offline on that immutable snapshot:
+
+```bash
+python run_reproducible_experiment.py --data snapshots/xauusd_sc_m15_30000.csv
+```
+
+The experiment verifies the checksum before training and independently replays
+the baseline, v4.1 all-gated and v4.2 SELL-only strategies. Selection criteria
+are declared in `config/config.yaml` before the test. If no candidate passes
+every locked requirement, `decision.json` returns `NO_DEPLOY` instead of
+forcing the least-bad model into live trading.
+
 ## Install
 ```bash
 python -m venv .venv
@@ -192,6 +215,8 @@ python run_forward_confirmation.py
 python run_meta_labeling.py
 python run_meta_labeling_v41.py
 python run_meta_labeling_v42.py
+python export_mt5_snapshot.py
+python run_reproducible_experiment.py --data snapshots/xauusd_sc_m15_30000.csv
 python main.py
 ```
 

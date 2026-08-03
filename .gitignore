@@ -13,3 +13,4 @@ training_data/*.csv
 models/*.joblib
 reports/*.json
 reports/*.csv
+snapshots/

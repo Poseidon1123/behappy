@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from demo.executor import _send_checked
+from demo.lock import SingleInstanceError, single_instance_lock
 from demo.safety import DemoSafetyError, SafetyLimits, refresh_equity_limits, require_demo_account, require_spread
 
 
@@ -62,6 +63,16 @@ class DemoSafetyTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             _send_checked(RejectedMT5, {"symbol": "XAUUSD.sc"})
         self.assertEqual(RejectedMT5.send_calls, 0)
+
+    def test_second_runner_is_blocked(self) -> None:
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as directory:
+            lock_path = f"{directory}/demo.lock"
+            with single_instance_lock(lock_path):
+                with self.assertRaises(SingleInstanceError):
+                    with single_instance_lock(lock_path):
+                        pass
 
 
 if __name__ == "__main__":

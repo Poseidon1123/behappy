@@ -310,6 +310,29 @@ The dry run consumes the current closed bar, so enabling orders afterward waits
 for the next new M15 bar. Persistent events are written to
 `demo_logs/v51_demo_events.jsonl`.
 
+### Step 19 - v5.1 Demo Control HMI
+
+Open the dedicated desktop dashboard:
+
+```bash
+python run_v51_demo_hmi.py
+```
+
+The HMI can start/stop the guarded demo runner; enable or disable demo orders;
+adjust BUY, SELL and SELL-meta thresholds; tune spread, daily-loss, drawdown and
+polling limits; inspect market charts/candles across M1–H4; and monitor open
+positions, the bot's 30-day deal history and persistent AI/execution events.
+
+The model-processing timeframe remains locked to M15 because v5.1 was trained
+and validated on M15 features. The chart timeframe is independently selectable.
+Changing model thresholds marks the session `EXPERIMENTAL` and requires a new
+confirmation before starting. Lot remains fixed at `0.01`, and the backend still
+hard-refuses real accounts regardless of HMI settings.
+
+Stop any command-line `run_v51_demo.py` process with `Ctrl+C` before starting the
+HMI. An operating-system lock prevents two runners from sharing one state and
+potentially processing the same closed candle concurrently.
+
 ## Install
 ```bash
 python -m venv .venv
@@ -337,6 +360,7 @@ python run_v51_experiment.py --data snapshots/xauusd_sc_m15_90000.csv
 python freeze_v51_candidate.py --data snapshots/xauusd_sc_m15_90000.csv
 python run_v51_shadow.py
 python run_v51_demo.py --once
+python run_v51_demo_hmi.py
 python main.py
 ```
 

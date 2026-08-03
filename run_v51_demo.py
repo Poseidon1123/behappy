@@ -20,6 +20,7 @@ from demo.executor import (
     open_demo_position,
     save_demo_state,
 )
+from demo.lock import SingleInstanceError, single_instance_lock
 from demo.safety import DemoSafetyError, SafetyLimits, refresh_equity_limits, require_demo_account, require_spread
 from shadow.engine import load_verified_bundle
 
@@ -35,12 +36,23 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--max-spread-points", type=float, default=100.0)
     parser.add_argument("--max-daily-loss-pct", type=float, default=2.0)
     parser.add_argument("--max-drawdown-pct", type=float, default=5.0)
+    parser.add_argument("--buy-threshold", type=float, default=None)
+    parser.add_argument("--sell-threshold", type=float, default=None)
+    parser.add_argument("--meta-threshold", type=float, default=None)
     parser.add_argument("--enable-demo-orders", action="store_true")
     parser.add_argument("--once", action="store_true")
     return parser.parse_args()
 
 
-def _signal(bundle: dict, frame: pd.DataFrame, state: dict) -> dict:
+def _signal(
+    bundle: dict,
+    frame: pd.DataFrame,
+    state: dict,
+    *,
+    buy_threshold: float | None = None,
+    sell_threshold: float | None = None,
+    meta_threshold: float | None = None,
+) -> dict:
     raw = pd.concat([bundle["raw_context_tail"], frame], ignore_index=True)
     raw["time"] = pd.to_datetime(raw["time"], utc=True)
     raw.sort_values("time", inplace=True)
@@ -61,13 +73,16 @@ def _signal(bundle: dict, frame: pd.DataFrame, state: dict) -> dict:
         return {"side": "HOLD", "reason": "DRIFT_BLOCK", "bar_time": bar_time, "new_bars": new_bars, "drift_score": score}
     buy_p = float(bundle["buy_model"].predict_proba(pd.DataFrame([row[bundle["buy_features"]]]))[:, 1][0])
     sell_p = float(bundle["sell_model"].predict_proba(pd.DataFrame([row[bundle["sell_features"]]]))[:, 1][0])
-    side = _outer_decision(buy_p, sell_p, buy_threshold=bundle["buy_threshold"], sell_threshold=bundle["sell_threshold"], min_probability_edge=bundle["min_probability_edge"])
+    buy_limit = float(bundle["buy_threshold"] if buy_threshold is None else buy_threshold)
+    sell_limit = float(bundle["sell_threshold"] if sell_threshold is None else sell_threshold)
+    meta_limit = float(bundle["meta_gate_threshold"] if meta_threshold is None else meta_threshold)
+    side = _outer_decision(buy_p, sell_p, buy_threshold=buy_limit, sell_threshold=sell_limit, min_probability_edge=bundle["min_probability_edge"])
     meta_p = None
     reason = "PRIMARY_HOLD"
     if side == "SELL":
-        vector = _meta_vector(row, side="SELL", primary=sell_p, opposing=buy_p, primary_threshold=bundle["sell_threshold"])
+        vector = _meta_vector(row, side="SELL", primary=sell_p, opposing=buy_p, primary_threshold=sell_limit)
         meta_p = float(bundle["sell_meta_model"].predict_proba(vector)[:, 1][0])
-        if meta_p < bundle["meta_gate_threshold"]:
+        if meta_p < meta_limit:
             side, reason = "HOLD", "SELL_META_BLOCK"
         else:
             reason = "SELL_META_PASS"
@@ -90,7 +105,14 @@ def _cycle(args: argparse.Namespace) -> dict:
         require_demo_account(mt5, account, terminal)
         equity_block = refresh_equity_limits(state, equity=float(account.equity), limits=limits)
         bars = MarketData().get_bars_chunked(snapshot["symbol"], snapshot["timeframe"], count=args.bars, chunk_size=min(5000, args.bars), require_full_count=False)
-        signal = _signal(bundle, bars, state)
+        signal = _signal(
+            bundle,
+            bars,
+            state,
+            buy_threshold=args.buy_threshold,
+            sell_threshold=args.sell_threshold,
+            meta_threshold=args.meta_threshold,
+        )
         positions = bot_positions(mt5, snapshot["symbol"])
         all_positions = mt5.positions_get()
         if all_positions is None:
@@ -136,7 +158,17 @@ def _cycle(args: argparse.Namespace) -> dict:
             action = {"action": "NO_ORDER"}
         state["last_processed_bar_utc"] = signal["bar_time"]
         save_demo_state(args.state, state)
-        outcome = {"account_login": int(account.login), "account_trade_mode": "DEMO", "orders_enabled": args.enable_demo_orders, "signal": signal, "execution": action, "safety": {"daily_loss_pct": state["daily_loss_pct"], "drawdown_pct": state["drawdown_pct"], "entry_block": equity_block, "max_positions": 1, "fixed_lot": cfg.fixed_lot}}
+        active_thresholds = {
+            "buy": float(bundle["buy_threshold"] if args.buy_threshold is None else args.buy_threshold),
+            "sell": float(bundle["sell_threshold"] if args.sell_threshold is None else args.sell_threshold),
+            "sell_meta": float(bundle["meta_gate_threshold"] if args.meta_threshold is None else args.meta_threshold),
+        }
+        active_thresholds["frozen_candidate_unchanged"] = (
+            abs(active_thresholds["buy"] - float(bundle["buy_threshold"])) < 1e-12
+            and abs(active_thresholds["sell"] - float(bundle["sell_threshold"])) < 1e-12
+            and abs(active_thresholds["sell_meta"] - float(bundle["meta_gate_threshold"])) < 1e-12
+        )
+        outcome = {"account_login": int(account.login), "account_trade_mode": "DEMO", "orders_enabled": args.enable_demo_orders, "signal": signal, "execution": action, "thresholds": active_thresholds, "safety": {"daily_loss_pct": state["daily_loss_pct"], "drawdown_pct": state["drawdown_pct"], "entry_block": equity_block, "max_positions": 1, "fixed_lot": cfg.fixed_lot}}
         append_demo_event(args.events, outcome)
         return outcome
 
@@ -145,16 +177,25 @@ def main() -> None:
     args = _arguments()
     if args.bars < 1000 or args.poll_seconds < 5:
         raise ValueError("--bars must be >=1000 and --poll-seconds must be >=5")
+    for name, value in (("buy", args.buy_threshold), ("sell", args.sell_threshold), ("meta", args.meta_threshold)):
+        if value is not None and not 0.50 <= value <= 0.99:
+            raise ValueError(f"--{name}-threshold must be between 0.50 and 0.99")
     print("V5.1 MT5 DEMO ONLY — REAL ACCOUNTS ARE HARD-BLOCKED")
-    while True:
-        try:
-            print(json.dumps(_cycle(args), indent=2, default=str))
-        except DemoSafetyError as exc:
-            print(json.dumps({"status": "SAFETY_BLOCK", "reason": str(exc)}, indent=2))
-            raise SystemExit(2) from exc
-        if args.once:
-            break
-        time.sleep(args.poll_seconds)
+    lock_path = args.state.with_suffix(args.state.suffix + ".lock")
+    try:
+        with single_instance_lock(lock_path):
+            while True:
+                try:
+                    print(json.dumps(_cycle(args), indent=2, default=str))
+                except DemoSafetyError as exc:
+                    print(json.dumps({"status": "SAFETY_BLOCK", "reason": str(exc)}, indent=2))
+                    raise SystemExit(2) from exc
+                if args.once:
+                    break
+                time.sleep(args.poll_seconds)
+    except SingleInstanceError as exc:
+        print(json.dumps({"status": "INSTANCE_BLOCK", "reason": str(exc)}, indent=2))
+        raise SystemExit(3) from exc
 
 
 if __name__ == "__main__":

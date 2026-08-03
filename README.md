@@ -206,6 +206,31 @@ If the broker terminal has fewer bars cached, the exporter stops instead of
 silently creating a short snapshot and explains how to increase MT5's
 `Max bars in chart` setting.
 
+### Step 15 - v5 Causal Drift/OOD Gate
+v5 adds a distribution-drift gate to the v4.2 hybrid architecture and also
+replays a BUY-only control strategy. Drift calibration uses only rolling
+windows inside each outer-training history. Test scores are computed from bars
+strictly before each decision block and never read future outer-test bars.
+
+Fixed v5 drift policy:
+
+```text
+recent window       500 bars
+score refresh       100 bars
+calibration step    250 bars
+training percentile 95%
+```
+
+Run on a frozen snapshot:
+
+```bash
+python run_v5_experiment.py --data snapshots/xauusd_sc_m15_90000.csv
+```
+
+The runner independently compares baseline, v4.1 all-gated, v4.2 hybrid,
+v4.3 BUY-only and v5 causal drift. It retains the locked `NO_DEPLOY` acceptance
+policy and writes drift diagnostics alongside trade and fold reports.
+
 ## Install
 ```bash
 python -m venv .venv
@@ -228,6 +253,7 @@ python run_meta_labeling_v41.py
 python run_meta_labeling_v42.py
 python export_mt5_snapshot.py
 python run_reproducible_experiment.py --data snapshots/xauusd_sc_m15_30000.csv
+python run_v5_experiment.py --data snapshots/xauusd_sc_m15_90000.csv
 python main.py
 ```
 

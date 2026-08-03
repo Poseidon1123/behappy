@@ -289,6 +289,10 @@ def _replay_v41(
     gate_enabled: bool,
     gate_sides: frozenset[str] | None = None,
     meta_version: str = "v4.1_economic",
+    allowed_sides: frozenset[str] | None = None,
+    signal_allowed: dict[int, bool] | None = None,
+    drift_scores: dict[int, float] | None = None,
+    drift_cutoff: float | None = None,
 ) -> tuple[list[dict[str, Any]], float]:
     common = sorted(set(buy_prob).intersection(sell_prob))
     if not common:
@@ -310,6 +314,12 @@ def _replay_v41(
             min_probability_edge=cfg.min_probability_edge,
         )
         if side == "HOLD":
+            i += 1
+            continue
+        if allowed_sides is not None and side not in allowed_sides:
+            i += 1
+            continue
+        if signal_allowed is not None and not signal_allowed.get(i, False):
             i += 1
             continue
 
@@ -363,6 +373,9 @@ def _replay_v41(
                 "meta_probability": meta_probability,
                 "meta_gate_threshold": meta_gate_threshold,
                 "meta_version": meta_version,
+                "drift_gate_enabled": signal_allowed is not None,
+                "drift_score": drift_scores.get(i, np.nan) if drift_scores is not None else np.nan,
+                "drift_cutoff": drift_cutoff,
             }
         )
         rows.append(record)

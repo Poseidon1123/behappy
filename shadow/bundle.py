@@ -54,7 +54,8 @@ def freeze_v51_bundle(
     drift_calibration_step: int,
     drift_cutoff_quantile: float,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    featured = build_features(raw_df).reset_index(drop=True)
+    timeframe = str(snapshot_manifest.get("timeframe", "M15"))
+    featured = build_features(raw_df, base_timeframe=timeframe).reset_index(drop=True)
     labeled = create_tp_sl_labels(
         featured,
         horizon=cfg.horizon,
@@ -157,6 +158,7 @@ def freeze_v51_bundle(
         "architecture": "v5.1_atr_adaptive_shadow",
         "execution_mode": "SHADOW_ONLY",
         "deployment_allowed": False,
+        "research_status": "DEVELOPMENT_DEMO_ONLY",
         "buy_model": buy_model,
         "sell_model": sell_model,
         "sell_meta_model": sell_meta_model,
@@ -174,13 +176,20 @@ def freeze_v51_bundle(
         "backtest_config": cfg,
         "snapshot_manifest": snapshot_manifest,
         "training_cutoff_utc": featured.iloc[-1]["time"].isoformat(),
-        "raw_context_tail": raw_df.tail(max(1500, drift_recent_window + 300)).copy(),
+        "raw_context_tail": raw_df.tail(
+            max(
+                1500,
+                drift_recent_window + 300,
+                {"M1": 6000, "M5": 1500, "M15": 1500, "M30": 1500, "H1": 1500, "H4": 1500}.get(timeframe.upper(), 1500),
+            )
+        ).copy(),
     }
     manifest = {
         "bundle_version": 1,
         "architecture": bundle["architecture"],
         "execution_mode": "SHADOW_ONLY",
         "deployment_allowed": False,
+        "research_status": "DEVELOPMENT_DEMO_ONLY",
         "snapshot_sha256": snapshot_manifest["sha256"],
         "training_cutoff_utc": bundle["training_cutoff_utc"],
         "buy_architecture": buy_arch,

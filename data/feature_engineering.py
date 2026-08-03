@@ -85,20 +85,42 @@ def _adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) ->
     return dx.ewm(alpha=1 / period, adjust=False, min_periods=period).mean() / 100.0
 
 
-def _build_h1_context(m15: pd.DataFrame) -> pd.DataFrame:
-    """Build completed H1 context from M15 bars without look-ahead.
+TIMEFRAME_MINUTES = {
+    "M1": 1,
+    "M5": 5,
+    "M15": 15,
+    "M30": 30,
+    "H1": 60,
+    "H4": 240,
+}
 
-    MT5 bar timestamps are bar-open times. A closed M15 bar therefore becomes
-    known 15 minutes later. We aggregate using that close timestamp so each H1
-    candle contains the four correct M15 candles and is only attached after it
-    has actually closed.
+CONTEXT_RULES = {
+    "M1": "1h",
+    "M5": "1h",
+    "M15": "1h",
+    "M30": "1h",
+    "H1": "4h",
+    "H4": "1D",
+}
+
+
+def _build_h1_context(bars: pd.DataFrame, base_timeframe: str = "M15") -> pd.DataFrame:
+    """Build completed higher-timeframe context without look-ahead.
+
+    Legacy feature names retain the ``h1_`` prefix for model compatibility. The
+    actual context is H1 for M1-M30, H4 for H1, and D1 for H4.
     """
-    base = m15[["time", "open", "high", "low", "close"]].copy()
-    base["m15_close_time"] = pd.to_datetime(base["time"], utc=True) + pd.Timedelta(minutes=15)
+    timeframe = base_timeframe.upper()
+    if timeframe not in TIMEFRAME_MINUTES:
+        raise ValueError(f"Unsupported feature timeframe: {base_timeframe}")
+    base = bars[["time", "open", "high", "low", "close"]].copy()
+    base["m15_close_time"] = pd.to_datetime(base["time"], utc=True) + pd.Timedelta(
+        minutes=TIMEFRAME_MINUTES[timeframe]
+    )
     base = base.drop(columns=["time"]).set_index("m15_close_time")
 
     h1 = (
-        base.resample("1h", label="right", closed="right")
+        base.resample(CONTEXT_RULES[timeframe], label="right", closed="right")
         .agg({"open": "first", "high": "max", "low": "min", "close": "last"})
         .dropna()
         .reset_index()
@@ -153,8 +175,11 @@ def _build_h1_context(m15: pd.DataFrame) -> pd.DataFrame:
     return h1[keep]
 
 
-def build_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Create causal M15, completed-H1 and market-regime features."""
+def build_features(df: pd.DataFrame, base_timeframe: str = "M15") -> pd.DataFrame:
+    """Create causal base-timeframe and completed context features."""
+    timeframe = base_timeframe.upper()
+    if timeframe not in TIMEFRAME_MINUTES:
+        raise ValueError(f"Unsupported feature timeframe: {base_timeframe}")
     required = {"time", "open", "high", "low", "close"}
     missing = required.difference(df.columns)
     if missing:
@@ -210,8 +235,8 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     else:
         out["spread_relative"] = 1.0
 
-    out["m15_close_time"] = out["time"] + pd.Timedelta(minutes=15)
-    h1 = _build_h1_context(out)
+    out["m15_close_time"] = out["time"] + pd.Timedelta(minutes=TIMEFRAME_MINUTES[timeframe])
+    h1 = _build_h1_context(out, timeframe)
     out = pd.merge_asof(
         out.sort_values("m15_close_time"),
         h1.sort_values("h1_close_time"),
@@ -228,7 +253,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def feature_matrix(df: pd.DataFrame, side: str = "BUY") -> pd.DataFrame:
-    features = build_features(df)
+def feature_matrix(df: pd.DataFrame, side: str = "BUY", base_timeframe: str = "M15") -> pd.DataFrame:
+    features = build_features(df, base_timeframe=base_timeframe)
     columns = BUY_FEATURE_COLUMNS if side.upper() == "BUY" else SELL_FEATURE_COLUMNS
     return features[columns]

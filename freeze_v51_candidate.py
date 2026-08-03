@@ -16,7 +16,7 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, default=None)
     parser.add_argument("--config", type=Path, default=Path("config/config.yaml"))
-    parser.add_argument("--output", type=Path, default=Path("models/v51_shadow_bundle.joblib"))
+    parser.add_argument("--output", type=Path, default=None)
     return parser.parse_args()
 
 
@@ -61,7 +61,9 @@ def main() -> None:
         drift_calibration_step=int(drift.get("calibration_step", 250)),
         drift_cutoff_quantile=float(drift.get("cutoff_quantile", 0.95)),
     )
-    output, manifest_path, final_manifest = save_bundle(bundle, manifest, args.output)
+    timeframe = str(snapshot_manifest["timeframe"]).lower()
+    default_output = Path("models/v51_shadow_bundle.joblib") if timeframe == "m15" else Path(f"models/v51_shadow_{timeframe}.joblib")
+    output, manifest_path, final_manifest = save_bundle(bundle, manifest, args.output or default_output)
     print("V5.1 CANDIDATE FROZEN — SHADOW ONLY")
     print(json.dumps(final_manifest, indent=2))
     print(f"Bundle: {output}")

@@ -31,6 +31,7 @@ def run_meta_labeling_walk_forward_v51(
     cfg: BacktestConfig,
     *,
     thresholds: list[float],
+    base_timeframe: str = "M15",
     outer_train_bars: int = 12000,
     inner_validation_bars: int = 1500,
     inner_splits: int = 3,
@@ -64,7 +65,7 @@ def run_meta_labeling_walk_forward_v51(
     The five strategies replay every outer test independently. This preserves
     signal ordering: skipping a gated SELL may expose a later BUY opportunity.
     """
-    featured = build_features(raw_df).reset_index(drop=True)
+    featured = build_features(raw_df, base_timeframe=base_timeframe).reset_index(drop=True)
     labeled = create_tp_sl_labels(
         featured,
         horizon=cfg.horizon,

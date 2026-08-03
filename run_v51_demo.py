@@ -57,7 +57,8 @@ def _signal(
     raw["time"] = pd.to_datetime(raw["time"], utc=True)
     raw.sort_values("time", inplace=True)
     raw.drop_duplicates("time", keep="last", inplace=True)
-    featured = build_features(raw).reset_index(drop=True)
+    timeframe = str(bundle["snapshot_manifest"].get("timeframe", "M15"))
+    featured = build_features(raw, base_timeframe=timeframe).reset_index(drop=True)
     row = featured.iloc[-1]
     bar_time = row["time"].isoformat()
     previous = pd.Timestamp(state["last_processed_bar_utc"]) if state.get("last_processed_bar_utc") else None

@@ -184,7 +184,8 @@ def process_closed_bars(
     raw["time"] = pd.to_datetime(raw["time"], utc=True)
     raw.sort_values("time", inplace=True)
     raw.drop_duplicates("time", keep="last", inplace=True)
-    featured = build_features(raw).reset_index(drop=True)
+    timeframe = str(bundle["snapshot_manifest"].get("timeframe", "M15"))
+    featured = build_features(raw, base_timeframe=timeframe).reset_index(drop=True)
     indices = featured.index[featured["time"] > last].tolist()
     processed = 0
     for index in indices:

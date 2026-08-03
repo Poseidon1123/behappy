@@ -122,6 +122,7 @@ def main() -> None:
         data,
         cfg,
         thresholds=thresholds,
+        base_timeframe=str(manifest.get("timeframe", "M15")),
         outer_train_bars=int(nested.get("outer_train_bars", 12000)),
         inner_validation_bars=int(nested.get("inner_validation_bars", 1500)),
         inner_splits=int(nested.get("inner_splits", 3)),

@@ -50,6 +50,7 @@ class DemoHMI(QMainWindow):
         snapshot = self.bundle["snapshot_manifest"]
         self.symbol = str(snapshot["symbol"])
         self.execution_timeframe = str(snapshot["timeframe"])
+        self.bundle_paths = {self.execution_timeframe.upper(): self.bundle_path}
         self.events_path = self.root_dir / "demo_logs" / "v51_demo_events.jsonl"
         self.state_path = self.root_dir / "demo_state" / "v51_demo_state.json"
         self.connector = MT5Connector()
@@ -58,6 +59,8 @@ class DemoHMI(QMainWindow):
         self.process.setProcessChannelMode(QProcess.MergedChannels)
         self.process.readyReadStandardOutput.connect(self._read_process_output)
         self.process.finished.connect(self._process_finished)
+        self.process_mode: str | None = None
+        self.building_timeframe: str | None = None
         self.last_event_line = ""
 
         self.setWindowTitle("v5.1 XAUUSD Demo Bot — Control HMI")
@@ -86,7 +89,8 @@ class DemoHMI(QMainWindow):
         self.mode_status.setStyleSheet("color:#38bdf8; font-weight:800;")
         header.addWidget(title)
         header.addStretch()
-        header.addWidget(QLabel(f"{self.symbol} • MODEL {self.execution_timeframe}"))
+        self.symbol_model_label = QLabel(f"{self.symbol} • MODEL {self.execution_timeframe}")
+        header.addWidget(self.symbol_model_label)
         header.addWidget(self.mode_status)
         header.addWidget(self.account_status)
         header.addWidget(self.bot_status)
@@ -137,10 +141,24 @@ class DemoHMI(QMainWindow):
         self.chart_timeframe.setCurrentText(self.execution_timeframe)
         self.chart_timeframe.currentTextChanged.connect(lambda _text: self.refresh_dashboard())
         toolbar.addWidget(self.chart_timeframe)
-        toolbar.addWidget(QLabel("Bot processing candle"))
-        locked = QLabel(f"{self.execution_timeframe} (frozen model)")
-        locked.setStyleSheet("color:#fbbf24;font-weight:700;")
-        toolbar.addWidget(locked)
+        toolbar.addWidget(QLabel("Bot processing timeframe"))
+        self.bot_timeframe = QComboBox()
+        self.bot_timeframe.addItems(["M1", "M5", "M15", "M30", "H1", "H4"])
+        self.bot_timeframe.setCurrentText(self.execution_timeframe)
+        self.bot_timeframe.currentTextChanged.connect(self._change_model_timeframe)
+        toolbar.addWidget(self.bot_timeframe)
+        self.model_readiness = QLabel(f"{self.execution_timeframe} MODEL READY")
+        self.model_readiness.setStyleSheet("color:#22c55e;font-weight:800;")
+        toolbar.addWidget(self.model_readiness)
+        toolbar.addWidget(QLabel("Training bars"))
+        self.training_bars = QSpinBox()
+        self.training_bars.setRange(15000, 100000)
+        self.training_bars.setSingleStep(5000)
+        self.training_bars.setValue(30000)
+        toolbar.addWidget(self.training_bars)
+        self.build_model_button = QPushButton("BUILD SELECTED MODEL")
+        self.build_model_button.clicked.connect(self.build_selected_model)
+        toolbar.addWidget(self.build_model_button)
         toolbar.addStretch()
         layout.addLayout(toolbar)
 
@@ -208,7 +226,8 @@ class DemoHMI(QMainWindow):
         risk_form.addRow("Max daily loss (%)", self.daily_loss)
         risk_form.addRow("Max drawdown (%)", self.max_drawdown)
         risk_form.addRow("Poll interval (s)", self.poll_seconds)
-        risk_form.addRow("Fixed lot", QLabel(str(self.bundle["backtest_config"].fixed_lot)))
+        self.fixed_lot_label = QLabel(str(self.bundle["backtest_config"].fixed_lot))
+        risk_form.addRow("Fixed lot", self.fixed_lot_label)
         risk_form.addRow(self.demo_orders)
         layout.addWidget(safety)
 
@@ -281,6 +300,57 @@ class DemoHMI(QMainWindow):
             self.account_status.setStyleSheet("color:#ef4444;font-weight:800;")
             self._write_log(f"MT5 error: {exc}")
 
+    def _bundle_candidate(self, timeframe: str) -> Path:
+        if timeframe in self.bundle_paths:
+            return self.bundle_paths[timeframe]
+        if timeframe == "M15":
+            generated = self.root_dir / "models" / "v51_shadow_m15.joblib"
+            if generated.exists():
+                return generated
+            return self.root_dir / "models" / "v51_shadow_bundle.joblib"
+        return self.root_dir / "models" / f"v51_shadow_{timeframe.lower()}.joblib"
+
+    def _change_model_timeframe(self, timeframe: str) -> None:
+        candidate = self._bundle_candidate(timeframe)
+        if not candidate.exists():
+            self.model_readiness.setText(f"{timeframe} MODEL NOT TRAINED")
+            self.model_readiness.setStyleSheet("color:#ef4444;font-weight:900;")
+            self.start_button.setEnabled(False)
+            self._write_log(
+                f"Missing {candidate}. Export a {timeframe} snapshot and freeze its own bundle first."
+            )
+            return
+        try:
+            bundle, manifest = load_verified_bundle(candidate)
+            actual = str(bundle["snapshot_manifest"].get("timeframe", "")).upper()
+            if actual != timeframe:
+                raise ValueError(f"Bundle timeframe is {actual}, not {timeframe}")
+            self.bundle_path = candidate
+            self.bundle_paths[timeframe] = candidate
+            self.bundle, self.manifest = bundle, manifest
+            self.symbol = str(bundle["snapshot_manifest"]["symbol"])
+            self.execution_timeframe = timeframe
+            suffix = "" if timeframe == "M15" else f"_{timeframe.lower()}"
+            self.events_path = self.root_dir / "demo_logs" / f"v51_demo{suffix}_events.jsonl"
+            self.state_path = self.root_dir / "demo_state" / f"v51_demo{suffix}_state.json"
+            self.buy_threshold.setValue(float(bundle["buy_threshold"]))
+            self.sell_threshold.setValue(float(bundle["sell_threshold"]))
+            self.meta_threshold.setValue(float(bundle["meta_gate_threshold"]))
+            self.fixed_lot_label.setText(str(bundle["backtest_config"].fixed_lot))
+            self.symbol_model_label.setText(f"{self.symbol} • MODEL {timeframe}")
+            self.model_readiness.setText(f"{timeframe} MODEL READY")
+            self.model_readiness.setStyleSheet("color:#22c55e;font-weight:800;")
+            self.start_button.setEnabled(True)
+            self.chart_timeframe.setCurrentText(timeframe)
+            self._threshold_status()
+            self._write_log(f"Loaded {timeframe} bundle: {candidate}")
+            self.refresh_dashboard()
+        except Exception as exc:
+            self.model_readiness.setText(f"{timeframe} BUNDLE ERROR")
+            self.model_readiness.setStyleSheet("color:#ef4444;font-weight:900;")
+            self.start_button.setEnabled(False)
+            self._write_log(f"Could not load {timeframe} bundle: {exc}")
+
     def start_bot(self) -> None:
         if self.process.state() != QProcess.ProcessState.NotRunning:
             return
@@ -325,6 +395,7 @@ class DemoHMI(QMainWindow):
         if self.demo_orders.isChecked():
             args.append("--enable-demo-orders")
         self.process.setWorkingDirectory(str(self.root_dir))
+        self.process_mode = "bot"
         self.process.start(sys.executable, args)
         if not self.process.waitForStarted(5000):
             QMessageBox.critical(self, "Start error", self.process.errorString())
@@ -336,22 +407,74 @@ class DemoHMI(QMainWindow):
         self._set_controls_enabled(False)
         self._write_log("Demo bot started")
 
+    def build_selected_model(self) -> None:
+        if self.process.state() != QProcess.ProcessState.NotRunning:
+            QMessageBox.warning(self, "Process busy", "Stop the current bot/process first.")
+            return
+        timeframe = self.bot_timeframe.currentText()
+        answer = QMessageBox.question(
+            self,
+            f"Build {timeframe} model",
+            f"Download {self.training_bars.value():,} closed {timeframe} bars and train a new DEVELOPMENT bundle? This may take several minutes.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        args = [
+            "-u", str(self.root_dir / "prepare_v51_timeframe.py"),
+            "--timeframe", timeframe,
+            "--bars", str(self.training_bars.value()),
+            "--chunk-size", "5000",
+        ]
+        self.process.setWorkingDirectory(str(self.root_dir))
+        self.process_mode = "build"
+        self.building_timeframe = timeframe
+        self.process.start(sys.executable, args)
+        if not self.process.waitForStarted(5000):
+            QMessageBox.critical(self, "Build error", self.process.errorString())
+            self.process_mode = None
+            self.building_timeframe = None
+            return
+        self.bot_status.setText(f"● BUILDING {timeframe} MODEL")
+        self.bot_status.setStyleSheet("color:#f59e0b;font-weight:800;")
+        self.start_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
+        self._set_controls_enabled(False)
+        self._write_log(f"Building {timeframe} model from {self.training_bars.value():,} bars")
+
     def stop_bot(self) -> None:
         if self.process.state() != QProcess.ProcessState.NotRunning:
             self.process.terminate()
             if not self.process.waitForFinished(3000):
                 self.process.kill()
+                self.process.waitForFinished(1000)
+            return
         self._process_finished()
 
-    def _process_finished(self, *_args) -> None:
+    def _process_finished(self, exit_code: int = 0, *_args) -> None:
+        completed_mode = self.process_mode
+        completed_timeframe = self.building_timeframe
+        self.process_mode = None
+        self.building_timeframe = None
         self.bot_status.setText("● BOT STOPPED")
         self.bot_status.setStyleSheet("color:#94a3b8;font-weight:800;")
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self._set_controls_enabled(True)
+        if completed_mode == "build":
+            if exit_code != 0:
+                self.bot_status.setText(f"● {completed_timeframe or ''} BUILD FAILED")
+                self.bot_status.setStyleSheet("color:#ef4444;font-weight:900;")
+                self._write_log(f"Model build failed with exit code {exit_code}")
+                self._change_model_timeframe(self.bot_timeframe.currentText())
+                return
+            if completed_timeframe:
+                self.bundle_paths.pop(completed_timeframe, None)
+            self._change_model_timeframe(completed_timeframe or self.bot_timeframe.currentText())
 
     def _set_controls_enabled(self, enabled: bool) -> None:
-        for widget in (self.buy_threshold, self.sell_threshold, self.meta_threshold, self.max_spread, self.daily_loss, self.max_drawdown, self.poll_seconds, self.demo_orders):
+        for widget in (self.bot_timeframe, self.training_bars, self.build_model_button, self.buy_threshold, self.sell_threshold, self.meta_threshold, self.max_spread, self.daily_loss, self.max_drawdown, self.poll_seconds, self.demo_orders):
             widget.setEnabled(enabled)
 
     def _experimental_thresholds(self) -> bool:

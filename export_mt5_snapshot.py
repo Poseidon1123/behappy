@@ -3,12 +3,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import MetaTrader5 as mt5
 import yaml
 
 from data.snapshot import save_snapshot
-from mt5.market_data import MarketData
-from mt5.mt5_connector import MT5Connector
 
 
 def _arguments() -> argparse.Namespace:
@@ -16,16 +13,21 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--bars", type=int, default=30000)
     parser.add_argument("--chunk-size", type=int, default=10000)
     parser.add_argument("--output", type=Path, default=Path("snapshots/xauusd_sc_m15_30000.csv"))
+    parser.add_argument("--timeframe", choices=["M1", "M5", "M15", "M30", "H1", "H4"], default=None)
     parser.add_argument("--config", type=Path, default=Path("config/config.yaml"))
     return parser.parse_args()
 
 
 def main() -> None:
     args = _arguments()
+    import MetaTrader5 as mt5
+
+    from mt5.market_data import MarketData
+    from mt5.mt5_connector import MT5Connector
     config = yaml.safe_load(args.config.read_text(encoding="utf-8")) or {}
     trading = config.get("trading", {})
     symbol = str(trading.get("symbol", "XAUUSD.sc"))
-    timeframe = str(trading.get("timeframe", "M15"))
+    timeframe = str(args.timeframe or trading.get("timeframe", "M15"))
 
     print(f"Downloading {args.bars:,} CLOSED bars: {symbol} {timeframe}")
     with MT5Connector():

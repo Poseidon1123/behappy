@@ -323,8 +323,19 @@ adjust BUY, SELL and SELL-meta thresholds; tune spread, daily-loss, drawdown and
 polling limits; inspect market charts/candles across M1–H4; and monitor open
 positions, the bot's 30-day deal history and persistent AI/execution events.
 
-The model-processing timeframe remains locked to M15 because v5.1 was trained
-and validated on M15 features. The chart timeframe is independently selectable.
+The bot-processing selector supports M1, M5, M15, M30, H1 and H4. Each selection
+requires its own frozen bundle; the HMI never reuses the M15 model on another
+timeframe. Select a timeframe and click `BUILD SELECTED MODEL` to download its
+closed MT5 bars, freeze a dedicated bundle and enable Start. Chart timeframe is
+independently selectable. New timeframe models are DEVELOPMENT/DEMO candidates
+and do not inherit the M15 validation result.
+
+The equivalent CLI workflow is:
+
+```bash
+python prepare_v51_timeframe.py --timeframe M5 --bars 30000
+```
+
 Changing model thresholds marks the session `EXPERIMENTAL` and requires a new
 confirmation before starting. Lot remains fixed at `0.01`, and the backend still
 hard-refuses real accounts regardless of HMI settings.

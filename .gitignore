@@ -14,6 +14,8 @@ models/*.joblib
 models/*.manifest.json
 shadow_state/
 shadow_logs/
+demo_state/
+demo_logs/
 reports/*.json
 reports/*.csv
 reports/

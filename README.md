@@ -285,6 +285,31 @@ state after each bar, and writes every decision, simulated entry and exit under
 cost and same-bar TP/SL assumptions as the backtest. It is deliberately marked
 `SHADOW_ONLY`, rejects non-shadow bundles and contains no broker order operation.
 
+### Step 18 - Guarded MT5 Demo Execution
+
+The demo runner reuses the same frozen bundle, fixed `0.01` lot and v5.1
+decision pipeline. It hard-refuses every account whose MT5 `trade_mode` is not
+`ACCOUNT_TRADE_MODE_DEMO`, limits the account to one open position, applies
+spread/daily-loss/drawdown gates and calls `order_check` before `order_send`.
+
+First run it without order permission:
+
+```bash
+python run_v51_demo.py --once
+```
+
+After confirming the printed account mode is `DEMO`, enable demo orders:
+
+```bash
+python run_v51_demo.py --enable-demo-orders
+```
+
+Keep the MT5 Algo Trading button enabled. The `--enable-demo-orders` flag cannot
+override the hard demo-account check. Real-money execution remains unavailable.
+The dry run consumes the current closed bar, so enabling orders afterward waits
+for the next new M15 bar. Persistent events are written to
+`demo_logs/v51_demo_events.jsonl`.
+
 ## Install
 ```bash
 python -m venv .venv
@@ -311,6 +336,7 @@ python run_v5_experiment.py --data snapshots/xauusd_sc_m15_90000.csv
 python run_v51_experiment.py --data snapshots/xauusd_sc_m15_90000.csv
 python freeze_v51_candidate.py --data snapshots/xauusd_sc_m15_90000.csv
 python run_v51_shadow.py
+python run_v51_demo.py --once
 python main.py
 ```
 

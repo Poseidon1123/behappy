@@ -174,6 +174,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     true_range = _true_range(high, low, close)
     atr14 = true_range.rolling(14).mean()
     atr50 = true_range.rolling(50).mean()
+    out["atr14_abs"] = atr14
     out["atr_ratio"] = atr14 / atr50.replace(0.0, np.nan)
 
     returns = close.pct_change()

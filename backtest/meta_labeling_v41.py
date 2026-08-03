@@ -12,6 +12,7 @@ from ai.labeling import create_tp_sl_labels
 from backtest.ablation import FEATURE_GROUPS
 from backtest.analysis import analyze_sides
 from backtest.engine import BacktestConfig, _simulate_trade, _summary
+from backtest.exits import ExitPolicy, simulate_trade_with_exit_policy
 from backtest.nested_robust import (
     BUY_GROUP,
     SELL_GROUPS,
@@ -293,6 +294,7 @@ def _replay_v41(
     signal_allowed: dict[int, bool] | None = None,
     drift_scores: dict[int, float] | None = None,
     drift_cutoff: float | None = None,
+    exit_policy: ExitPolicy | None = None,
 ) -> tuple[list[dict[str, Any]], float]:
     common = sorted(set(buy_prob).intersection(sell_prob))
     if not common:
@@ -348,15 +350,27 @@ def _replay_v41(
                 i += 1
                 continue
 
-        trade, exit_i = _simulate_trade(
-            df=test,
-            signal_index=i,
-            side=side,
-            buy_probability=bp,
-            sell_probability=sp,
-            cfg=cfg,
-            balance=balance,
-        )
+        if exit_policy is None:
+            trade, exit_i = _simulate_trade(
+                df=test,
+                signal_index=i,
+                side=side,
+                buy_probability=bp,
+                sell_probability=sp,
+                cfg=cfg,
+                balance=balance,
+            )
+        else:
+            trade, exit_i = simulate_trade_with_exit_policy(
+                df=test,
+                signal_index=i,
+                side=side,
+                buy_probability=bp,
+                sell_probability=sp,
+                cfg=cfg,
+                balance=balance,
+                policy=exit_policy,
+            )
         record = asdict(trade)
         record.update(
             {
@@ -376,6 +390,7 @@ def _replay_v41(
                 "drift_gate_enabled": signal_allowed is not None,
                 "drift_score": drift_scores.get(i, np.nan) if drift_scores is not None else np.nan,
                 "drift_cutoff": drift_cutoff,
+                "exit_policy_id": exit_policy.policy_id if exit_policy is not None else "fixed_pct_8",
             }
         )
         rows.append(record)

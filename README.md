@@ -231,6 +231,32 @@ The runner independently compares baseline, v4.1 all-gated, v4.2 hybrid,
 v4.3 BUY-only and v5 causal drift. It retains the locked `NO_DEPLOY` acceptance
 policy and writes drift diagnostics alongside trade and fold reports.
 
+### Step 16 - v5.1 Inner-Selected ATR Exits
+v5.1 keeps v5 signal, meta and drift logic fixed, then selects one exit policy
+inside historical inner validation for each outer fold. The outer test never
+participates in choosing TP, SL or holding horizon.
+
+Predeclared candidates:
+
+```text
+fixed TP 0.6%, SL 0.3%, horizon 8
+ATR TP 3.0, SL 1.5, horizon 12
+ATR TP 3.0, SL 2.0, horizon 16
+ATR TP 4.0, SL 2.0, horizon 24
+```
+
+ATR is calculated on the closed signal bar; entry remains next-bar open.
+Same-bar TP/SL ambiguity remains a conservative SL.
+
+Run:
+
+```bash
+python run_v51_experiment.py --data snapshots/xauusd_sc_m15_90000.csv
+```
+
+Reports include the policy selected per outer fold and every inner candidate's
+robust score. The locked deployment criteria remain unchanged.
+
 ## Install
 ```bash
 python -m venv .venv
@@ -254,6 +280,7 @@ python run_meta_labeling_v42.py
 python export_mt5_snapshot.py
 python run_reproducible_experiment.py --data snapshots/xauusd_sc_m15_30000.csv
 python run_v5_experiment.py --data snapshots/xauusd_sc_m15_90000.csv
+python run_v51_experiment.py --data snapshots/xauusd_sc_m15_90000.csv
 python main.py
 ```
 

@@ -257,6 +257,34 @@ python run_v51_experiment.py --data snapshots/xauusd_sc_m15_90000.csv
 Reports include the policy selected per outer fold and every inner candidate's
 robust score. The locked deployment criteria remain unchanged.
 
+### Step 17 - Frozen v5.1 Shadow/Paper Bot
+
+Freeze one candidate from the immutable snapshot. The bundle records the data
+SHA-256, training cutoff, selected primary architectures and thresholds, SELL
+economic meta gate, causal drift reference/cutoff and inner-selected exit policy.
+
+```bash
+python freeze_v51_candidate.py --data snapshots/xauusd_sc_m15_90000.csv
+```
+
+Run one pass over newly closed MT5 bars:
+
+```bash
+python run_v51_shadow.py
+```
+
+Or keep polling for new closed bars:
+
+```bash
+python run_v51_shadow.py --watch --poll-seconds 30
+```
+
+The runner starts with the configured virtual balance (`1000.00`), persists its
+state after each bar, and writes every decision, simulated entry and exit under
+`shadow_logs/`. Signals enter at the next bar open and use the same conservative
+cost and same-bar TP/SL assumptions as the backtest. It is deliberately marked
+`SHADOW_ONLY`, rejects non-shadow bundles and contains no broker order operation.
+
 ## Install
 ```bash
 python -m venv .venv
@@ -281,6 +309,8 @@ python export_mt5_snapshot.py
 python run_reproducible_experiment.py --data snapshots/xauusd_sc_m15_30000.csv
 python run_v5_experiment.py --data snapshots/xauusd_sc_m15_90000.csv
 python run_v51_experiment.py --data snapshots/xauusd_sc_m15_90000.csv
+python freeze_v51_candidate.py --data snapshots/xauusd_sc_m15_90000.csv
+python run_v51_shadow.py
 python main.py
 ```
 

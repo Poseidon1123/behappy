@@ -150,5 +150,12 @@ drift_v5:
   calibration_step: 250
   cutoff_quantile: 0.95
 
+shadow_v51:
+  bundle_path: "models/v51_shadow_bundle.joblib"
+  state_path: "shadow_state/v51_state.json"
+  events_path: "shadow_logs/v51_events.csv"
+  fetch_bars: 10000
+  poll_seconds: 30
+
 application:
   log_level: "INFO"

@@ -46,7 +46,7 @@ def _psi(reference: pd.Series, current: pd.Series, bins: int = 10) -> float:
     return float(np.sum((actual_pct - expected_pct) * np.log(actual_pct / expected_pct)))
 
 
-def _drift_score(reference: pd.DataFrame, current: pd.DataFrame) -> float:
+def drift_score(reference: pd.DataFrame, current: pd.DataFrame) -> float:
     scores = [_psi(reference[col], current[col]) for col in DRIFT_FEATURES]
     finite = [score for score in scores if np.isfinite(score)]
     return float(np.mean(finite)) if finite else float("nan")
@@ -81,7 +81,7 @@ def build_causal_drift_map(
     reference = featured.iloc[train_start:train_end]
     calibration: list[float] = []
     for end in range(recent_window, len(reference) + 1, calibration_step):
-        score = _drift_score(reference, reference.iloc[end - recent_window:end])
+        score = drift_score(reference, reference.iloc[end - recent_window:end])
         if np.isfinite(score):
             calibration.append(score)
     if len(calibration) < 10:
@@ -97,7 +97,7 @@ def build_causal_drift_map(
         if recent_start < 0:
             score = float("nan")
         else:
-            score = _drift_score(reference, featured.iloc[recent_start:absolute])
+            score = drift_score(reference, featured.iloc[recent_start:absolute])
         block_allowed = bool(np.isfinite(score) and score <= cutoff)
         for local_index in range(block_start, min(block_start + score_step, test_length)):
             allowed[local_index] = block_allowed

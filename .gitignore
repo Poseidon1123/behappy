@@ -11,6 +11,9 @@ Thumbs.db
 logs/*.log
 training_data/*.csv
 models/*.joblib
+models/*.manifest.json
+shadow_state/
+shadow_logs/
 reports/*.json
 reports/*.csv
 reports/

@@ -195,6 +195,17 @@ are declared in `config/config.yaml` before the test. If no candidate passes
 every locked requirement, `decision.json` returns `NO_DEPLOY` instead of
 forcing the least-bad model into live trading.
 
+Large histories are downloaded in chunks to avoid MT5's single-request size
+limit. For example:
+
+```bash
+python export_mt5_snapshot.py --bars 100000 --output snapshots/xauusd_sc_m15_100000.csv
+```
+
+If the broker terminal has fewer bars cached, the exporter stops instead of
+silently creating a short snapshot and explains how to increase MT5's
+`Max bars in chart` setting.
+
 ## Install
 ```bash
 python -m venv .venv

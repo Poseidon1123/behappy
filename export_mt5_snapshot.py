@@ -14,6 +14,7 @@ from mt5.mt5_connector import MT5Connector
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Freeze closed MT5 bars for reproducible research")
     parser.add_argument("--bars", type=int, default=30000)
+    parser.add_argument("--chunk-size", type=int, default=10000)
     parser.add_argument("--output", type=Path, default=Path("snapshots/xauusd_sc_m15_30000.csv"))
     parser.add_argument("--config", type=Path, default=Path("config/config.yaml"))
     return parser.parse_args()
@@ -28,11 +29,13 @@ def main() -> None:
 
     print(f"Downloading {args.bars:,} CLOSED bars: {symbol} {timeframe}")
     with MT5Connector():
-        frame = MarketData().get_bars(
+        frame = MarketData().get_bars_chunked(
             symbol=symbol,
             timeframe=timeframe,
             count=args.bars,
             include_current_bar=False,
+            chunk_size=args.chunk_size,
+            require_full_count=True,
         )
         info = mt5.symbol_info(symbol)
         if info is None:

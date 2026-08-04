@@ -242,18 +242,30 @@ class DemoHMI(QMainWindow):
         self.max_spread = self._spin(1, 1000, 100, 5, 0)
         self.daily_loss = self._spin(0.1, 20, 2, 0.1, 1)
         self.max_drawdown = self._spin(0.5, 50, 5, 0.5, 1)
-        self.poll_seconds = QSpinBox()
-        self.poll_seconds.setRange(5, 300)
-        self.poll_seconds.setValue(30)
+        self.override_tp_sl = QCheckBox("Override model TP / SL (DEMO experimental)")
+        default_cfg = self.bundle["backtest_config"]
+        self.take_profit_percent = self._spin(0.01, 20.0, float(default_cfg.take_profit_pct) * 100.0, 0.05, 2)
+        self.stop_loss_percent = self._spin(0.01, 20.0, float(default_cfg.stop_loss_pct) * 100.0, 0.05, 2)
+        self.bar_open_delay = self._spin(0.0, 30.0, 2.0, 0.5, 1)
+        self.override_tp_sl.toggled.connect(self._update_tp_sl_controls)
         self.demo_orders = QCheckBox("ENABLE DEMO ORDERS")
         self.demo_orders.setStyleSheet("color:#fbbf24;font-weight:800;")
         risk_form.addRow("Max spread (points)", self.max_spread)
         risk_form.addRow("Max daily loss (%)", self.daily_loss)
         risk_form.addRow("Max drawdown (%)", self.max_drawdown)
-        risk_form.addRow("Poll interval (s)", self.poll_seconds)
+        risk_form.addRow(self.override_tp_sl)
+        risk_form.addRow("Take profit (%)", self.take_profit_percent)
+        risk_form.addRow("Stop loss (%)", self.stop_loss_percent)
+        risk_form.addRow("Decision delay after candle open (s)", self.bar_open_delay)
+        self.candle_decision_note = QLabel(
+            "The AI evaluates once at the start of each selected model candle. Broker TP/SL remain active continuously."
+        )
+        self.candle_decision_note.setWordWrap(True)
+        risk_form.addRow(self.candle_decision_note)
         self.fixed_lot_label = QLabel(str(self.bundle["backtest_config"].fixed_lot))
         risk_form.addRow("Fixed lot", self.fixed_lot_label)
         risk_form.addRow(self.demo_orders)
+        self._update_tp_sl_controls(False)
         layout.addWidget(safety)
 
         control = QGroupBox("Bot control")
@@ -369,6 +381,8 @@ class DemoHMI(QMainWindow):
             self.sell_threshold.setValue(float(bundle["sell_threshold"]))
             self.meta_threshold.setValue(float(bundle["meta_gate_threshold"]))
             self.fixed_lot_label.setText(str(bundle["backtest_config"].fixed_lot))
+            self.take_profit_percent.setValue(float(bundle["backtest_config"].take_profit_pct) * 100.0)
+            self.stop_loss_percent.setValue(float(bundle["backtest_config"].stop_loss_pct) * 100.0)
             self.symbol_model_label.setText(f"{self.symbol} • MODEL {timeframe}")
             self.model_readiness.setText(f"{timeframe} MODEL READY")
             self.model_readiness.setStyleSheet("color:#22c55e;font-weight:800;")
@@ -391,11 +405,12 @@ class DemoHMI(QMainWindow):
             QMessageBox.critical(self, "Safety block", "Only an MT5 DEMO account can run this bot.")
             return
         experimental = self._experimental_thresholds()
-        if experimental:
+        if experimental or self.override_tp_sl.isChecked():
+            changed = "Thresholds and/or TP/SL" if experimental else "TP/SL"
             answer = QMessageBox.warning(
                 self,
-                "Experimental thresholds",
-                "Thresholds differ from the frozen v5.1 candidate. These settings have not been validated. Continue on DEMO?",
+                "Experimental settings",
+                f"{changed} differ from the frozen v5.1 candidate. These settings have not been validated. Continue on DEMO?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -416,7 +431,7 @@ class DemoHMI(QMainWindow):
             "--bundle", str(self.bundle_path),
             "--state", str(self.state_path),
             "--events", str(self.events_path),
-            "--poll-seconds", str(self.poll_seconds.value()),
+            "--bar-open-delay-seconds", str(self.bar_open_delay.value()),
             "--max-spread-points", str(self.max_spread.value()),
             "--max-daily-loss-pct", str(self.daily_loss.value()),
             "--max-drawdown-pct", str(self.max_drawdown.value()),
@@ -424,6 +439,11 @@ class DemoHMI(QMainWindow):
             "--sell-threshold", str(self.sell_threshold.value()),
             "--meta-threshold", str(self.meta_threshold.value()),
         ]
+        if self.override_tp_sl.isChecked():
+            args.extend([
+                "--take-profit-percent", str(self.take_profit_percent.value()),
+                "--stop-loss-percent", str(self.stop_loss_percent.value()),
+            ])
         if self.demo_orders.isChecked():
             args.append("--enable-demo-orders")
         self.process.setWorkingDirectory(str(self.root_dir))
@@ -506,8 +526,15 @@ class DemoHMI(QMainWindow):
             self._change_model_timeframe(completed_timeframe or self.bot_timeframe.currentText())
 
     def _set_controls_enabled(self, enabled: bool) -> None:
-        for widget in (self.bot_timeframe, self.training_bars, self.build_model_button, self.buy_threshold, self.sell_threshold, self.meta_threshold, self.max_spread, self.daily_loss, self.max_drawdown, self.poll_seconds, self.demo_orders):
+        for widget in (self.bot_timeframe, self.training_bars, self.build_model_button, self.buy_threshold, self.sell_threshold, self.meta_threshold, self.max_spread, self.daily_loss, self.max_drawdown, self.override_tp_sl, self.bar_open_delay, self.demo_orders):
             widget.setEnabled(enabled)
+        self.take_profit_percent.setEnabled(enabled and self.override_tp_sl.isChecked())
+        self.stop_loss_percent.setEnabled(enabled and self.override_tp_sl.isChecked())
+
+    def _update_tp_sl_controls(self, checked: bool) -> None:
+        process_idle = self.process.state() == QProcess.ProcessState.NotRunning
+        self.take_profit_percent.setEnabled(bool(checked) and process_idle)
+        self.stop_loss_percent.setEnabled(bool(checked) and process_idle)
 
     def _experimental_thresholds(self) -> bool:
         return any((

@@ -25,13 +25,28 @@ from demo.safety import DemoSafetyError, SafetyLimits, refresh_equity_limits, re
 from shadow.engine import load_verified_bundle
 
 
+TIMEFRAME_SECONDS = {
+    "M1": 60,
+    "M5": 5 * 60,
+    "M15": 15 * 60,
+    "M30": 30 * 60,
+    "H1": 60 * 60,
+    "H4": 4 * 60 * 60,
+}
+
+
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Frozen v5.1 DEMO-ACCOUNT execution")
     parser.add_argument("--bundle", type=Path, default=Path("models/v51_shadow_bundle.joblib"))
     parser.add_argument("--state", type=Path, default=Path("demo_state/v51_demo_state.json"))
     parser.add_argument("--events", type=Path, default=Path("demo_logs/v51_demo_events.jsonl"))
     parser.add_argument("--bars", type=int, default=10000)
-    parser.add_argument("--poll-seconds", type=int, default=30)
+    parser.add_argument(
+        "--bar-open-delay-seconds",
+        type=float,
+        default=2.0,
+        help="Wait this many seconds after a new timeframe candle opens before evaluating the closed candle",
+    )
     parser.add_argument("--deviation-points", type=int, default=20)
     parser.add_argument("--max-spread-points", type=float, default=100.0)
     parser.add_argument("--max-daily-loss-pct", type=float, default=2.0)
@@ -39,6 +54,18 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--buy-threshold", type=float, default=None)
     parser.add_argument("--sell-threshold", type=float, default=None)
     parser.add_argument("--meta-threshold", type=float, default=None)
+    parser.add_argument(
+        "--take-profit-percent",
+        type=float,
+        default=None,
+        help="Experimental fixed TP distance in percent of entry; overrides the bundle exit policy",
+    )
+    parser.add_argument(
+        "--stop-loss-percent",
+        type=float,
+        default=None,
+        help="Experimental fixed SL distance in percent of entry; overrides the bundle exit policy",
+    )
     parser.add_argument("--enable-demo-orders", action="store_true")
     parser.add_argument("--once", action="store_true")
     return parser.parse_args()
@@ -140,7 +167,11 @@ def _cycle(args: argparse.Namespace) -> dict:
                 raise RuntimeError(f"Could not read {snapshot['symbol']} tick/info")
             spread = require_spread(tick, float(info.point), args.max_spread_points)
             entry = float(tick.ask if signal["side"] == "BUY" else tick.bid)
-            if policy.mode == "atr":
+            risk_override = args.take_profit_percent is not None
+            if risk_override:
+                tp_distance = entry * float(args.take_profit_percent) / 100.0
+                sl_distance = entry * float(args.stop_loss_percent) / 100.0
+            elif policy.mode == "atr":
                 tp_distance = signal["atr14_abs"] * policy.take_profit_atr
                 sl_distance = signal["atr14_abs"] * policy.stop_loss_atr
             else:
@@ -169,23 +200,51 @@ def _cycle(args: argparse.Namespace) -> dict:
             and abs(active_thresholds["sell"] - float(bundle["sell_threshold"])) < 1e-12
             and abs(active_thresholds["sell_meta"] - float(bundle["meta_gate_threshold"])) < 1e-12
         )
-        outcome = {"account_login": int(account.login), "account_trade_mode": "DEMO", "orders_enabled": args.enable_demo_orders, "signal": signal, "execution": action, "thresholds": active_thresholds, "safety": {"daily_loss_pct": state["daily_loss_pct"], "drawdown_pct": state["drawdown_pct"], "entry_block": equity_block, "max_positions": 1, "fixed_lot": cfg.fixed_lot}}
+        active_risk = {
+            "mode": "HMI_FIXED_PERCENT" if args.take_profit_percent is not None else f"BUNDLE_{str(policy.mode).upper()}",
+            "take_profit_percent": args.take_profit_percent,
+            "stop_loss_percent": args.stop_loss_percent,
+            "bundle_exit_policy": getattr(policy, "policy_id", None),
+        }
+        outcome = {"account_login": int(account.login), "account_trade_mode": "DEMO", "orders_enabled": args.enable_demo_orders, "signal": signal, "execution": action, "thresholds": active_thresholds, "risk": active_risk, "safety": {"daily_loss_pct": state["daily_loss_pct"], "drawdown_pct": state["drawdown_pct"], "entry_block": equity_block, "max_positions": 1, "fixed_lot": cfg.fixed_lot}}
         append_demo_event(args.events, outcome)
         return outcome
 
 
 def main() -> None:
     args = _arguments()
-    if args.bars < 1000 or args.poll_seconds < 5:
-        raise ValueError("--bars must be >=1000 and --poll-seconds must be >=5")
+    if args.bars < 1000:
+        raise ValueError("--bars must be >=1000")
+    if not 0.0 <= args.bar_open_delay_seconds <= 30.0:
+        raise ValueError("--bar-open-delay-seconds must be between 0 and 30")
+    if (args.take_profit_percent is None) != (args.stop_loss_percent is None):
+        raise ValueError("TP and SL overrides must be supplied together")
+    for name, value in (("take-profit", args.take_profit_percent), ("stop-loss", args.stop_loss_percent)):
+        if value is not None and not 0.01 <= value <= 20.0:
+            raise ValueError(f"--{name}-percent must be between 0.01 and 20.0")
     for name, value in (("buy", args.buy_threshold), ("sell", args.sell_threshold), ("meta", args.meta_threshold)):
         if value is not None and not 0.50 <= value <= 0.99:
             raise ValueError(f"--{name}-threshold must be between 0.50 and 0.99")
     print("V5.1 MT5 DEMO ONLY — REAL ACCOUNTS ARE HARD-BLOCKED")
+    bundle, _manifest = load_verified_bundle(args.bundle)
+    timeframe = str(bundle["snapshot_manifest"].get("timeframe", "M15")).upper()
+    if timeframe not in TIMEFRAME_SECONDS:
+        raise ValueError(f"Unsupported execution timeframe: {timeframe}")
+    period_seconds = TIMEFRAME_SECONDS[timeframe]
     lock_path = args.state.with_suffix(args.state.suffix + ".lock")
     try:
         with single_instance_lock(lock_path):
             while True:
+                if not args.once:
+                    now = time.time()
+                    next_open = (math.floor(now / period_seconds) + 1) * period_seconds
+                    wait_seconds = max(0.0, next_open + args.bar_open_delay_seconds - now)
+                    print(
+                        f"Waiting {wait_seconds:.1f}s for next {timeframe} candle open "
+                        f"(+{args.bar_open_delay_seconds:g}s data delay)",
+                        flush=True,
+                    )
+                    time.sleep(wait_seconds)
                 try:
                     print(json.dumps(_cycle(args), indent=2, default=str))
                 except DemoSafetyError as exc:
@@ -193,7 +252,6 @@ def main() -> None:
                     raise SystemExit(2) from exc
                 if args.once:
                     break
-                time.sleep(args.poll_seconds)
     except SingleInstanceError as exc:
         print(json.dumps({"status": "INSTANCE_BLOCK", "reason": str(exc)}, indent=2))
         raise SystemExit(3) from exc

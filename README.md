@@ -306,9 +306,20 @@ python run_v51_demo.py --enable-demo-orders
 
 Keep the MT5 Algo Trading button enabled. The `--enable-demo-orders` flag cannot
 override the hard demo-account check. Real-money execution remains unavailable.
-The dry run consumes the current closed bar, so enabling orders afterward waits
-for the next new M15 bar. Persistent events are written to
+In continuous mode the runner does not poll every 30 seconds. It waits for the
+next opening boundary of the bundle timeframe, adds a short data-settlement
+delay (default 2 seconds), and evaluates the newly closed candle exactly once.
+Starting the bot midway through a candle therefore waits for the next candle.
+`--once` remains an explicit diagnostic command and evaluates immediately.
+Persistent events are written to
 `demo_logs/v51_demo_events.jsonl`.
+
+Optional fixed-percentage TP/SL overrides are DEMO experiments and must always
+be provided as a pair. For example:
+
+```bash
+python run_v51_demo.py --enable-demo-orders --take-profit-percent 0.60 --stop-loss-percent 0.30
+```
 
 ### Step 19 - v5.1 Demo Control HMI
 
@@ -319,9 +330,13 @@ python run_v51_demo_hmi.py
 ```
 
 The HMI can start/stop the guarded demo runner; enable or disable demo orders;
-adjust BUY, SELL and SELL-meta thresholds; tune spread, daily-loss, drawdown and
-polling limits; inspect market charts/candles across M1–H4; and monitor open
+adjust BUY, SELL and SELL-meta thresholds; optionally override TP and SL as a
+percentage of entry; tune spread, daily-loss, drawdown and the short candle-open
+data delay; inspect market charts/candles across M1–H4; and monitor open
 positions, the bot's 30-day deal history and persistent AI/execution events.
+
+The bot evaluates entries only once near the beginning of each selected model
+candle. MT5/broker TP and SL remain active continuously between decisions.
 
 The bot-processing selector supports M1, M5, M15, M30, H1 and H4. Each selection
 requires its own frozen bundle; the HMI never reuses the M15 model on another

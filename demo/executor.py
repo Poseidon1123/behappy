@@ -22,12 +22,14 @@ def load_demo_state(path: str | Path, bundle_sha256: str) -> dict[str, Any]:
             "last_order_signal_utc": None,
             "position_entry_bar_utc": None,
             "position_bars_elapsed": 0,
+            "position_bars_elapsed_by_ticket": {},
         }
     state = json.loads(target.read_text(encoding="utf-8"))
     if state.get("execution_mode") != "DEMO_ONLY":
         raise ValueError("Demo state has an unexpected execution mode")
     if state.get("bundle_sha256") != bundle_sha256:
         raise ValueError("Demo state belongs to another frozen bundle; use a new state path")
+    state.setdefault("position_bars_elapsed_by_ticket", {})
     return state
 
 

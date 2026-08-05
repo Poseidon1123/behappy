@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from demo.executor import _send_checked
 from demo.lock import SingleInstanceError, single_instance_lock
-from demo.safety import DemoSafetyError, SafetyLimits, refresh_equity_limits, require_demo_account, require_spread
+from demo.safety import DemoSafetyError, SafetyLimits, refresh_equity_limits, require_demo_account, require_spread, require_volume
 
 
 class FakeMT5:
@@ -43,6 +43,15 @@ class DemoSafetyTests(unittest.TestCase):
     def test_wide_spread_is_blocked(self) -> None:
         with self.assertRaises(DemoSafetyError):
             require_spread(SimpleNamespace(ask=2501.5, bid=2500.0), 0.01, 100.0)
+
+    def test_valid_broker_volume_is_allowed(self) -> None:
+        info = SimpleNamespace(volume_min=0.01, volume_max=10.0, volume_step=0.01)
+        self.assertEqual(require_volume(0.12, info), 0.12)
+
+    def test_invalid_broker_volume_step_is_blocked(self) -> None:
+        info = SimpleNamespace(volume_min=0.01, volume_max=10.0, volume_step=0.01)
+        with self.assertRaises(DemoSafetyError):
+            require_volume(0.125, info)
 
     def test_failed_order_check_never_calls_order_send(self) -> None:
         class RejectedMT5(FakeMT5):

@@ -26,6 +26,16 @@ def require_demo_account(mt5: Any, account: Any, terminal: Any) -> None:
         raise DemoSafetyError("REFUSED: Algo Trading is disabled in the MT5 terminal")
 
 
+def require_position_mode(mt5: Any, account: Any, max_positions: int) -> None:
+    if int(max_positions) <= 1:
+        return
+    hedging_mode = getattr(mt5, "ACCOUNT_MARGIN_MODE_RETAIL_HEDGING", None)
+    if hedging_mode is None or int(account.margin_mode) != int(hedging_mode):
+        raise DemoSafetyError(
+            "REFUSED: max_positions > 1 requires an MT5 hedging account; netting accounts merge positions"
+        )
+
+
 def refresh_equity_limits(
     state: dict[str, Any],
     *,

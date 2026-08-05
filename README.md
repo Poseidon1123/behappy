@@ -321,6 +321,13 @@ be provided as a pair. For example:
 python run_v51_demo.py --enable-demo-orders --take-profit-percent 0.60 --stop-loss-percent 0.30
 ```
 
+Demo lot can also be overridden. The runner checks the requested value against
+the symbol's broker-provided minimum, maximum and volume step before any order:
+
+```bash
+python run_v51_demo.py --enable-demo-orders --fixed-lot 0.02
+```
+
 ### Step 19 - v5.1 Demo Control HMI
 
 Open the dedicated desktop dashboard:
@@ -330,7 +337,7 @@ python run_v51_demo_hmi.py
 ```
 
 The HMI can start/stop the guarded demo runner; enable or disable demo orders;
-adjust BUY, SELL and SELL-meta thresholds; optionally override TP and SL as a
+adjust BUY, SELL and SELL-meta thresholds; adjust fixed lot; optionally override TP and SL as a
 percentage of entry; tune spread, daily-loss, drawdown and the short candle-open
 data delay; inspect market charts/candles across M1–H4; and monitor open
 positions, the bot's 30-day deal history and persistent AI/execution events.

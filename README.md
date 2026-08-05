@@ -344,6 +344,9 @@ positions, the bot's 30-day deal history and persistent AI/execution events.
 
 The bot evaluates entries only once near the beginning of each selected model
 candle. MT5/broker TP and SL remain active continuously between decisions.
+`Max positions` controls the concurrent account/bot position cap (1–10). The
+bot still opens at most one new position per candle. Hedging accounts can keep
+separate positions; netting accounts may merge same-symbol trades.
 
 The bot-processing selector supports M1, M5, M15, M30, H1 and H4. Each selection
 requires its own frozen bundle; the HMI never reuses the M15 model on another

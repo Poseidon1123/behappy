@@ -264,6 +264,10 @@ class DemoHMI(QMainWindow):
         risk_form.addRow(self.candle_decision_note)
         self.fixed_lot = self._spin(0.01, 100.0, float(self.bundle["backtest_config"].fixed_lot), 0.01, 2)
         risk_form.addRow("Fixed lot", self.fixed_lot)
+        self.max_positions = QSpinBox()
+        self.max_positions.setRange(1, 10)
+        self.max_positions.setValue(1)
+        risk_form.addRow("Max positions (hedging)", self.max_positions)
         risk_form.addRow(self.demo_orders)
         self._update_tp_sl_controls(False)
         layout.addWidget(safety)
@@ -406,7 +410,7 @@ class DemoHMI(QMainWindow):
             return
         experimental = self._experimental_thresholds()
         lot_changed = abs(self.fixed_lot.value() - float(self.bundle["backtest_config"].fixed_lot)) > 1e-9
-        if experimental or self.override_tp_sl.isChecked() or lot_changed:
+        if experimental or self.override_tp_sl.isChecked() or lot_changed or self.max_positions.value() != 1:
             changed = "Thresholds, TP/SL and/or lot"
             answer = QMessageBox.warning(
                 self,
@@ -436,6 +440,7 @@ class DemoHMI(QMainWindow):
             "--max-spread-points", str(self.max_spread.value()),
             "--max-daily-loss-pct", str(self.daily_loss.value()),
             "--max-drawdown-pct", str(self.max_drawdown.value()),
+            "--max-positions", str(self.max_positions.value()),
             "--buy-threshold", str(self.buy_threshold.value()),
             "--sell-threshold", str(self.sell_threshold.value()),
             "--meta-threshold", str(self.meta_threshold.value()),
@@ -529,7 +534,7 @@ class DemoHMI(QMainWindow):
             self._change_model_timeframe(completed_timeframe or self.bot_timeframe.currentText())
 
     def _set_controls_enabled(self, enabled: bool) -> None:
-        for widget in (self.bot_timeframe, self.training_bars, self.build_model_button, self.buy_threshold, self.sell_threshold, self.meta_threshold, self.max_spread, self.daily_loss, self.max_drawdown, self.override_tp_sl, self.fixed_lot, self.bar_open_delay, self.demo_orders):
+        for widget in (self.bot_timeframe, self.training_bars, self.build_model_button, self.buy_threshold, self.sell_threshold, self.meta_threshold, self.max_spread, self.daily_loss, self.max_drawdown, self.override_tp_sl, self.fixed_lot, self.max_positions, self.bar_open_delay, self.demo_orders):
             widget.setEnabled(enabled)
         self.take_profit_percent.setEnabled(enabled and self.override_tp_sl.isChecked())
         self.stop_loss_percent.setEnabled(enabled and self.override_tp_sl.isChecked())

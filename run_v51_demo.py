@@ -21,7 +21,7 @@ from demo.executor import (
     save_demo_state,
 )
 from demo.lock import SingleInstanceError, single_instance_lock
-from demo.safety import DemoSafetyError, SafetyLimits, refresh_equity_limits, require_demo_account, require_spread
+from demo.safety import DemoSafetyError, SafetyLimits, refresh_equity_limits, require_demo_account, require_spread, require_volume
 from shadow.engine import load_verified_bundle
 
 
@@ -54,6 +54,12 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--buy-threshold", type=float, default=None)
     parser.add_argument("--sell-threshold", type=float, default=None)
     parser.add_argument("--meta-threshold", type=float, default=None)
+    parser.add_argument(
+        "--fixed-lot",
+        type=float,
+        default=None,
+        help="Experimental DEMO order volume; defaults to the frozen bundle lot",
+    )
     parser.add_argument(
         "--take-profit-percent",
         type=float,
@@ -166,6 +172,10 @@ def _cycle(args: argparse.Namespace) -> dict:
             if tick is None or info is None:
                 raise RuntimeError(f"Could not read {snapshot['symbol']} tick/info")
             spread = require_spread(tick, float(info.point), args.max_spread_points)
+            active_lot = require_volume(
+                float(cfg.fixed_lot if args.fixed_lot is None else args.fixed_lot),
+                info,
+            )
             entry = float(tick.ask if signal["side"] == "BUY" else tick.bid)
             risk_override = args.take_profit_percent is not None
             if risk_override:
@@ -179,13 +189,13 @@ def _cycle(args: argparse.Namespace) -> dict:
             tp = entry + tp_distance if signal["side"] == "BUY" else entry - tp_distance
             sl = entry - sl_distance if signal["side"] == "BUY" else entry + sl_distance
             if args.enable_demo_orders:
-                result = open_demo_position(mt5, symbol=snapshot["symbol"], side=signal["side"], volume=float(cfg.fixed_lot), stop_loss=sl, take_profit=tp, deviation_points=args.deviation_points)
-                action = {"action": "DEMO_ORDER_SENT", "retcode": int(result.retcode), "order": int(result.order), "deal": int(result.deal), "spread_points": spread}
+                result = open_demo_position(mt5, symbol=snapshot["symbol"], side=signal["side"], volume=active_lot, stop_loss=sl, take_profit=tp, deviation_points=args.deviation_points)
+                action = {"action": "DEMO_ORDER_SENT", "retcode": int(result.retcode), "order": int(result.order), "deal": int(result.deal), "spread_points": spread, "lot": active_lot}
                 state["last_order_signal_utc"] = signal["bar_time"]
                 state["position_entry_bar_utc"] = signal["bar_time"]
                 state["position_bars_elapsed"] = 0
             else:
-                action = {"action": "DRY_RUN_SIGNAL", "message": "Add --enable-demo-orders to permit DEMO orders", "spread_points": spread, "sl": sl, "tp": tp}
+                action = {"action": "DRY_RUN_SIGNAL", "message": "Add --enable-demo-orders to permit DEMO orders", "spread_points": spread, "sl": sl, "tp": tp, "lot": active_lot}
         else:
             action = {"action": "NO_ORDER"}
         state["last_processed_bar_utc"] = signal["bar_time"]
@@ -206,7 +216,8 @@ def _cycle(args: argparse.Namespace) -> dict:
             "stop_loss_percent": args.stop_loss_percent,
             "bundle_exit_policy": getattr(policy, "policy_id", None),
         }
-        outcome = {"account_login": int(account.login), "account_trade_mode": "DEMO", "orders_enabled": args.enable_demo_orders, "signal": signal, "execution": action, "thresholds": active_thresholds, "risk": active_risk, "safety": {"daily_loss_pct": state["daily_loss_pct"], "drawdown_pct": state["drawdown_pct"], "entry_block": equity_block, "max_positions": 1, "fixed_lot": cfg.fixed_lot}}
+        active_lot = float(cfg.fixed_lot if args.fixed_lot is None else args.fixed_lot)
+        outcome = {"account_login": int(account.login), "account_trade_mode": "DEMO", "orders_enabled": args.enable_demo_orders, "signal": signal, "execution": action, "thresholds": active_thresholds, "risk": active_risk, "safety": {"daily_loss_pct": state["daily_loss_pct"], "drawdown_pct": state["drawdown_pct"], "entry_block": equity_block, "max_positions": 1, "fixed_lot": active_lot, "frozen_lot": float(cfg.fixed_lot), "lot_override": args.fixed_lot is not None}}
         append_demo_event(args.events, outcome)
         return outcome
 
@@ -217,6 +228,8 @@ def main() -> None:
         raise ValueError("--bars must be >=1000")
     if not 0.0 <= args.bar_open_delay_seconds <= 30.0:
         raise ValueError("--bar-open-delay-seconds must be between 0 and 30")
+    if args.fixed_lot is not None and not 0.01 <= args.fixed_lot <= 100.0:
+        raise ValueError("--fixed-lot must be between 0.01 and 100.0")
     if (args.take_profit_percent is None) != (args.stop_loss_percent is None):
         raise ValueError("TP and SL overrides must be supplied together")
     for name, value in (("take-profit", args.take_profit_percent), ("stop-loss", args.stop_loss_percent)):

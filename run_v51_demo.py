@@ -21,7 +21,7 @@ from demo.executor import (
     save_demo_state,
 )
 from demo.lock import SingleInstanceError, single_instance_lock
-from demo.safety import DemoSafetyError, SafetyLimits, refresh_equity_limits, require_demo_account, require_spread, require_volume
+from demo.safety import DemoSafetyError, SafetyLimits, refresh_equity_limits, require_demo_account, require_position_mode, require_spread, require_volume
 from shadow.engine import load_verified_bundle
 
 
@@ -51,6 +51,7 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--max-spread-points", type=float, default=100.0)
     parser.add_argument("--max-daily-loss-pct", type=float, default=2.0)
     parser.add_argument("--max-drawdown-pct", type=float, default=5.0)
+    parser.add_argument("--max-positions", type=int, default=1)
     parser.add_argument("--buy-threshold", type=float, default=None)
     parser.add_argument("--sell-threshold", type=float, default=None)
     parser.add_argument("--meta-threshold", type=float, default=None)
@@ -137,6 +138,7 @@ def _cycle(args: argparse.Namespace) -> dict:
     with MT5Connector() as connector:
         account, terminal = mt5.account_info(), mt5.terminal_info()
         require_demo_account(mt5, account, terminal)
+        require_position_mode(mt5, account, args.max_positions)
         equity_block = refresh_equity_limits(state, equity=float(account.equity), limits=limits)
         bars = MarketData().get_bars_chunked(snapshot["symbol"], snapshot["timeframe"], count=args.bars, chunk_size=min(5000, args.bars), require_full_count=False)
         signal = _signal(
@@ -148,54 +150,69 @@ def _cycle(args: argparse.Namespace) -> dict:
             meta_threshold=args.meta_threshold,
         )
         positions = bot_positions(mt5, snapshot["symbol"])
-        all_positions = mt5.positions_get()
-        if all_positions is None:
-            raise RuntimeError(f"positions_get failed: {mt5.last_error()}")
-
-        if positions:
-            if len(positions) != 1:
-                raise DemoSafetyError("REFUSED: more than one v5.1 demo position exists")
-            state["position_bars_elapsed"] = int(state.get("position_bars_elapsed", 0)) + int(signal["new_bars"])
-            if state["position_bars_elapsed"] >= int(policy.horizon) and args.enable_demo_orders:
-                result = close_demo_position(mt5, positions[0], args.deviation_points)
-                action = {"action": "TIME_EXIT", "retcode": int(result.retcode), "ticket": int(positions[0].ticket)}
-                state["position_bars_elapsed"] = 0
-                state["position_entry_bar_utc"] = None
+        elapsed_by_ticket = {
+            str(ticket): int(value)
+            for ticket, value in state.get("position_bars_elapsed_by_ticket", {}).items()
+        }
+        if positions and not elapsed_by_ticket and int(state.get("position_bars_elapsed", 0)):
+            elapsed_by_ticket[str(positions[0].ticket)] = int(state["position_bars_elapsed"])
+        position_management = []
+        active_tickets = set()
+        for position in positions:
+            ticket = str(position.ticket)
+            elapsed = int(elapsed_by_ticket.get(ticket, 0)) + int(signal["new_bars"])
+            if elapsed >= int(policy.horizon) and args.enable_demo_orders:
+                result = close_demo_position(mt5, position, args.deviation_points)
+                position_management.append({"action": "TIME_EXIT", "retcode": int(result.retcode), "ticket": int(position.ticket), "bars_elapsed": elapsed})
             else:
-                action = {"action": "POSITION_MANAGED", "ticket": int(positions[0].ticket), "bars_elapsed": state["position_bars_elapsed"]}
-        elif signal["side"] in {"BUY", "SELL"}:
+                elapsed_by_ticket[ticket] = elapsed
+                active_tickets.add(ticket)
+                position_management.append({"action": "POSITION_MANAGED", "ticket": int(position.ticket), "bars_elapsed": elapsed})
+        elapsed_by_ticket = {
+            ticket: elapsed_by_ticket[ticket]
+            for ticket in active_tickets
+        }
+        state["position_bars_elapsed_by_ticket"] = elapsed_by_ticket
+        state["position_bars_elapsed"] = 0
+
+        if signal["side"] in {"BUY", "SELL"}:
             if equity_block:
                 raise DemoSafetyError(f"REFUSED: {equity_block}; new entries are blocked")
-            if len(all_positions) > 0:
-                raise DemoSafetyError("REFUSED: another MT5 position is open; max_positions=1")
-            tick, info = mt5.symbol_info_tick(snapshot["symbol"]), mt5.symbol_info(snapshot["symbol"])
-            if tick is None or info is None:
-                raise RuntimeError(f"Could not read {snapshot['symbol']} tick/info")
-            spread = require_spread(tick, float(info.point), args.max_spread_points)
-            active_lot = require_volume(
-                float(cfg.fixed_lot if args.fixed_lot is None else args.fixed_lot),
-                info,
-            )
-            entry = float(tick.ask if signal["side"] == "BUY" else tick.bid)
-            risk_override = args.take_profit_percent is not None
-            if risk_override:
-                tp_distance = entry * float(args.take_profit_percent) / 100.0
-                sl_distance = entry * float(args.stop_loss_percent) / 100.0
-            elif policy.mode == "atr":
-                tp_distance = signal["atr14_abs"] * policy.take_profit_atr
-                sl_distance = signal["atr14_abs"] * policy.stop_loss_atr
+            current_bot_positions = bot_positions(mt5, snapshot["symbol"])
+            all_positions = mt5.positions_get()
+            if all_positions is None:
+                raise RuntimeError(f"positions_get failed: {mt5.last_error()}")
+            if len(current_bot_positions) >= args.max_positions or len(all_positions) >= args.max_positions:
+                action = {"action": "MAX_POSITIONS_REACHED", "open_bot_positions": len(current_bot_positions), "open_account_positions": len(all_positions), "max_positions": args.max_positions, "position_management": position_management}
             else:
-                tp_distance, sl_distance = entry * cfg.take_profit_pct, entry * cfg.stop_loss_pct
-            tp = entry + tp_distance if signal["side"] == "BUY" else entry - tp_distance
-            sl = entry - sl_distance if signal["side"] == "BUY" else entry + sl_distance
-            if args.enable_demo_orders:
-                result = open_demo_position(mt5, symbol=snapshot["symbol"], side=signal["side"], volume=active_lot, stop_loss=sl, take_profit=tp, deviation_points=args.deviation_points)
-                action = {"action": "DEMO_ORDER_SENT", "retcode": int(result.retcode), "order": int(result.order), "deal": int(result.deal), "spread_points": spread, "lot": active_lot}
-                state["last_order_signal_utc"] = signal["bar_time"]
-                state["position_entry_bar_utc"] = signal["bar_time"]
-                state["position_bars_elapsed"] = 0
-            else:
-                action = {"action": "DRY_RUN_SIGNAL", "message": "Add --enable-demo-orders to permit DEMO orders", "spread_points": spread, "sl": sl, "tp": tp, "lot": active_lot}
+                tick, info = mt5.symbol_info_tick(snapshot["symbol"]), mt5.symbol_info(snapshot["symbol"])
+                if tick is None or info is None:
+                    raise RuntimeError(f"Could not read {snapshot['symbol']} tick/info")
+                spread = require_spread(tick, float(info.point), args.max_spread_points)
+                active_lot = require_volume(
+                    float(cfg.fixed_lot if args.fixed_lot is None else args.fixed_lot),
+                    info,
+                )
+                entry = float(tick.ask if signal["side"] == "BUY" else tick.bid)
+                risk_override = args.take_profit_percent is not None
+                if risk_override:
+                    tp_distance = entry * float(args.take_profit_percent) / 100.0
+                    sl_distance = entry * float(args.stop_loss_percent) / 100.0
+                elif policy.mode == "atr":
+                    tp_distance = signal["atr14_abs"] * policy.take_profit_atr
+                    sl_distance = signal["atr14_abs"] * policy.stop_loss_atr
+                else:
+                    tp_distance, sl_distance = entry * cfg.take_profit_pct, entry * cfg.stop_loss_pct
+                tp = entry + tp_distance if signal["side"] == "BUY" else entry - tp_distance
+                sl = entry - sl_distance if signal["side"] == "BUY" else entry + sl_distance
+                if args.enable_demo_orders:
+                    result = open_demo_position(mt5, symbol=snapshot["symbol"], side=signal["side"], volume=active_lot, stop_loss=sl, take_profit=tp, deviation_points=args.deviation_points)
+                    action = {"action": "DEMO_ORDER_SENT", "retcode": int(result.retcode), "order": int(result.order), "deal": int(result.deal), "spread_points": spread, "lot": active_lot, "position_management": position_management}
+                    state["last_order_signal_utc"] = signal["bar_time"]
+                else:
+                    action = {"action": "DRY_RUN_SIGNAL", "message": "Add --enable-demo-orders to permit DEMO orders", "spread_points": spread, "sl": sl, "tp": tp, "lot": active_lot, "position_management": position_management}
+        elif position_management:
+            action = {"action": "POSITIONS_MANAGED", "details": position_management}
         else:
             action = {"action": "NO_ORDER"}
         state["last_processed_bar_utc"] = signal["bar_time"]
@@ -217,7 +234,7 @@ def _cycle(args: argparse.Namespace) -> dict:
             "bundle_exit_policy": getattr(policy, "policy_id", None),
         }
         active_lot = float(cfg.fixed_lot if args.fixed_lot is None else args.fixed_lot)
-        outcome = {"account_login": int(account.login), "account_trade_mode": "DEMO", "orders_enabled": args.enable_demo_orders, "signal": signal, "execution": action, "thresholds": active_thresholds, "risk": active_risk, "safety": {"daily_loss_pct": state["daily_loss_pct"], "drawdown_pct": state["drawdown_pct"], "entry_block": equity_block, "max_positions": 1, "fixed_lot": active_lot, "frozen_lot": float(cfg.fixed_lot), "lot_override": args.fixed_lot is not None}}
+        outcome = {"account_login": int(account.login), "account_trade_mode": "DEMO", "orders_enabled": args.enable_demo_orders, "signal": signal, "execution": action, "thresholds": active_thresholds, "risk": active_risk, "safety": {"daily_loss_pct": state["daily_loss_pct"], "drawdown_pct": state["drawdown_pct"], "entry_block": equity_block, "max_positions": args.max_positions, "fixed_lot": active_lot, "frozen_lot": float(cfg.fixed_lot), "lot_override": args.fixed_lot is not None}}
         append_demo_event(args.events, outcome)
         return outcome
 
@@ -230,6 +247,8 @@ def main() -> None:
         raise ValueError("--bar-open-delay-seconds must be between 0 and 30")
     if args.fixed_lot is not None and not 0.01 <= args.fixed_lot <= 100.0:
         raise ValueError("--fixed-lot must be between 0.01 and 100.0")
+    if not 1 <= args.max_positions <= 10:
+        raise ValueError("--max-positions must be between 1 and 10")
     if (args.take_profit_percent is None) != (args.stop_loss_percent is None):
         raise ValueError("TP and SL overrides must be supplied together")
     for name, value in (("take-profit", args.take_profit_percent), ("stop-loss", args.stop_loss_percent)):

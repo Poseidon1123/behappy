@@ -6,11 +6,12 @@ from types import SimpleNamespace
 
 from demo.executor import _send_checked
 from demo.lock import SingleInstanceError, single_instance_lock
-from demo.safety import DemoSafetyError, SafetyLimits, refresh_equity_limits, require_demo_account, require_spread, require_volume
+from demo.safety import DemoSafetyError, SafetyLimits, refresh_equity_limits, require_demo_account, require_position_mode, require_spread, require_volume
 
 
 class FakeMT5:
     ACCOUNT_TRADE_MODE_DEMO = 0
+    ACCOUNT_MARGIN_MODE_RETAIL_HEDGING = 2
     TRADE_RETCODE_DONE = 10009
 
 
@@ -29,6 +30,12 @@ class DemoSafetyTests(unittest.TestCase):
             SimpleNamespace(trade_mode=0, trade_allowed=True),
             SimpleNamespace(trade_allowed=True),
         )
+
+    def test_multiple_positions_require_hedging(self) -> None:
+        with self.assertRaises(DemoSafetyError):
+            require_position_mode(FakeMT5, SimpleNamespace(margin_mode=0), 2)
+        require_position_mode(FakeMT5, SimpleNamespace(margin_mode=2), 2)
+        require_position_mode(FakeMT5, SimpleNamespace(margin_mode=0), 1)
 
     def test_equity_limit_blocks_entries_without_raising(self) -> None:
         state = {"equity_day_utc": "2026-08-03", "day_start_equity": 1000.0, "peak_equity": 1000.0}

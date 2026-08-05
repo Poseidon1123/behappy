@@ -55,3 +55,23 @@ def require_spread(tick: Any, point: float, limit_points: float) -> float:
     if spread < 0.0 or spread > limit_points:
         raise DemoSafetyError(f"REFUSED: spread {spread:.1f} points exceeds {limit_points:.1f}")
     return spread
+
+
+def require_volume(volume: float, symbol_info: Any) -> float:
+    requested = float(volume)
+    minimum = float(symbol_info.volume_min)
+    maximum = float(symbol_info.volume_max)
+    step = float(symbol_info.volume_step)
+    if step <= 0.0:
+        raise DemoSafetyError("REFUSED: broker returned an invalid volume step")
+    if requested < minimum - 1e-12 or requested > maximum + 1e-12:
+        raise DemoSafetyError(
+            f"REFUSED: lot {requested:g} is outside broker range {minimum:g}..{maximum:g}"
+        )
+    steps = round((requested - minimum) / step)
+    normalized = minimum + steps * step
+    if abs(normalized - requested) > max(1e-9, step * 1e-6):
+        raise DemoSafetyError(
+            f"REFUSED: lot {requested:g} does not match broker step {step:g}"
+        )
+    return round(normalized, 8)

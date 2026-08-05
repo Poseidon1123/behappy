@@ -262,8 +262,8 @@ class DemoHMI(QMainWindow):
         )
         self.candle_decision_note.setWordWrap(True)
         risk_form.addRow(self.candle_decision_note)
-        self.fixed_lot_label = QLabel(str(self.bundle["backtest_config"].fixed_lot))
-        risk_form.addRow("Fixed lot", self.fixed_lot_label)
+        self.fixed_lot = self._spin(0.01, 100.0, float(self.bundle["backtest_config"].fixed_lot), 0.01, 2)
+        risk_form.addRow("Fixed lot", self.fixed_lot)
         risk_form.addRow(self.demo_orders)
         self._update_tp_sl_controls(False)
         layout.addWidget(safety)
@@ -380,7 +380,7 @@ class DemoHMI(QMainWindow):
             self.buy_threshold.setValue(float(bundle["buy_threshold"]))
             self.sell_threshold.setValue(float(bundle["sell_threshold"]))
             self.meta_threshold.setValue(float(bundle["meta_gate_threshold"]))
-            self.fixed_lot_label.setText(str(bundle["backtest_config"].fixed_lot))
+            self.fixed_lot.setValue(float(bundle["backtest_config"].fixed_lot))
             self.take_profit_percent.setValue(float(bundle["backtest_config"].take_profit_pct) * 100.0)
             self.stop_loss_percent.setValue(float(bundle["backtest_config"].stop_loss_pct) * 100.0)
             self.symbol_model_label.setText(f"{self.symbol} • MODEL {timeframe}")
@@ -405,8 +405,9 @@ class DemoHMI(QMainWindow):
             QMessageBox.critical(self, "Safety block", "Only an MT5 DEMO account can run this bot.")
             return
         experimental = self._experimental_thresholds()
-        if experimental or self.override_tp_sl.isChecked():
-            changed = "Thresholds and/or TP/SL" if experimental else "TP/SL"
+        lot_changed = abs(self.fixed_lot.value() - float(self.bundle["backtest_config"].fixed_lot)) > 1e-9
+        if experimental or self.override_tp_sl.isChecked() or lot_changed:
+            changed = "Thresholds, TP/SL and/or lot"
             answer = QMessageBox.warning(
                 self,
                 "Experimental settings",
@@ -439,6 +440,8 @@ class DemoHMI(QMainWindow):
             "--sell-threshold", str(self.sell_threshold.value()),
             "--meta-threshold", str(self.meta_threshold.value()),
         ]
+        if abs(self.fixed_lot.value() - float(self.bundle["backtest_config"].fixed_lot)) > 1e-9:
+            args.extend(["--fixed-lot", str(self.fixed_lot.value())])
         if self.override_tp_sl.isChecked():
             args.extend([
                 "--take-profit-percent", str(self.take_profit_percent.value()),
@@ -526,7 +529,7 @@ class DemoHMI(QMainWindow):
             self._change_model_timeframe(completed_timeframe or self.bot_timeframe.currentText())
 
     def _set_controls_enabled(self, enabled: bool) -> None:
-        for widget in (self.bot_timeframe, self.training_bars, self.build_model_button, self.buy_threshold, self.sell_threshold, self.meta_threshold, self.max_spread, self.daily_loss, self.max_drawdown, self.override_tp_sl, self.bar_open_delay, self.demo_orders):
+        for widget in (self.bot_timeframe, self.training_bars, self.build_model_button, self.buy_threshold, self.sell_threshold, self.meta_threshold, self.max_spread, self.daily_loss, self.max_drawdown, self.override_tp_sl, self.fixed_lot, self.bar_open_delay, self.demo_orders):
             widget.setEnabled(enabled)
         self.take_profit_percent.setEnabled(enabled and self.override_tp_sl.isChecked())
         self.stop_loss_percent.setEnabled(enabled and self.override_tp_sl.isChecked())

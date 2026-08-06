@@ -91,3 +91,83 @@ class MarketData:
         df = pd.DataFrame(rates)
         df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
         return df
+
+    def get_bars_chunked(
+        self,
+        symbol: str,
+        timeframe: str = "M15",
+        count: int = 100_000,
+        include_current_bar: bool = False,
+        chunk_size: int = 10_000,
+        require_full_count: bool = True,
+    ) -> pd.DataFrame:
+        """Download a large history using MT5-safe positional chunks.
+
+        Some terminals reject a single large ``copy_rates_from_pos`` request
+        with ``(-2, 'Terminal: Invalid params')``. Smaller requests are joined,
+        sorted and de-duplicated here. By default a partial history is rejected
+        so a supposedly frozen snapshot cannot silently contain fewer bars than
+        its filename/configuration claims.
+        """
+        self.ensure_symbol(symbol)
+        tf = timeframe.upper()
+        if tf not in TIMEFRAMES:
+            raise MarketDataError(
+                f"Unsupported timeframe '{timeframe}'. "
+                f"Supported: {', '.join(TIMEFRAMES)}"
+            )
+        if count <= 0:
+            raise ValueError("count must be greater than zero.")
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be greater than zero.")
+
+        next_position = 0 if include_current_bar else 1
+        remaining = count
+        chunks: list[pd.DataFrame] = []
+        last_error: Any = None
+
+        while remaining > 0:
+            requested = min(chunk_size, remaining)
+            rates = mt5.copy_rates_from_pos(
+                symbol,
+                TIMEFRAMES[tf],
+                next_position,
+                requested,
+            )
+            if rates is None:
+                last_error = mt5.last_error()
+                break
+            if len(rates) == 0:
+                break
+
+            chunk = pd.DataFrame(rates)
+            chunk["time"] = pd.to_datetime(chunk["time"], unit="s", utc=True)
+            chunks.append(chunk)
+            received = len(chunk)
+            next_position += received
+            remaining -= received
+            if received < requested:
+                break
+
+        if not chunks:
+            raise MarketDataError(
+                f"Could not download bars for '{symbol}' in chunks. "
+                f"MT5 error: {last_error or mt5.last_error()}"
+            )
+
+        result = pd.concat(chunks, ignore_index=True)
+        result.sort_values("time", inplace=True)
+        result.drop_duplicates(subset=["time"], keep="last", inplace=True)
+        result.reset_index(drop=True, inplace=True)
+
+        if require_full_count and len(result) < count:
+            raise MarketDataError(
+                f"Requested {count:,} closed bars for '{symbol}' {tf}, but MT5 "
+                f"provided only {len(result):,}. In MT5 open Tools > Options > "
+                "Charts, increase 'Max bars in chart', restart MT5, open the "
+                f"{symbol} {tf} chart and scroll/load older history, then retry. "
+                f"Last MT5 error: {last_error or mt5.last_error()}"
+            )
+        if len(result) > count:
+            result = result.tail(count).reset_index(drop=True)
+        return result

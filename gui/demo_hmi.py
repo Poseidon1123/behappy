@@ -261,6 +261,11 @@ class DemoHMI(QMainWindow):
         self.max_spread = self._spin(1, 1000, 100, 5, 0)
         self.daily_loss = self._spin(0.1, 20, 2, 0.1, 1)
         self.max_drawdown = self._spin(0.5, 50, 5, 0.5, 1)
+        self.override_drift = QCheckBox("Override model drift cutoff (DEMO experimental)")
+        self.max_drift_score = self._spin(
+            0.01, 100.0, float(self.manifest["drift_cutoff"]), 0.05, 4
+        )
+        self.override_drift.toggled.connect(self._update_drift_control)
         self.override_tp_sl = QCheckBox("Override model TP / SL (DEMO experimental)")
         default_cfg = self.bundle["backtest_config"]
         self.take_profit_percent = self._spin(0.01, 20.0, float(default_cfg.take_profit_pct) * 100.0, 0.05, 2)
@@ -272,6 +277,8 @@ class DemoHMI(QMainWindow):
         risk_form.addRow("Max spread (points)", self.max_spread)
         risk_form.addRow("Max daily loss (%)", self.daily_loss)
         risk_form.addRow("Max drawdown (%)", self.max_drawdown)
+        risk_form.addRow(self.override_drift)
+        risk_form.addRow("Max drift score", self.max_drift_score)
         risk_form.addRow(self.override_tp_sl)
         risk_form.addRow("Take profit (%)", self.take_profit_percent)
         risk_form.addRow("Stop loss (%)", self.stop_loss_percent)
@@ -288,6 +295,7 @@ class DemoHMI(QMainWindow):
         self.max_positions.setValue(1)
         risk_form.addRow("Max positions (hedging)", self.max_positions)
         risk_form.addRow(self.demo_orders)
+        self._update_drift_control(False)
         self._update_tp_sl_controls(False)
         layout.addWidget(safety)
 
@@ -411,6 +419,8 @@ class DemoHMI(QMainWindow):
             self.fixed_lot.setValue(float(bundle["backtest_config"].fixed_lot))
             self.take_profit_percent.setValue(float(bundle["backtest_config"].take_profit_pct) * 100.0)
             self.stop_loss_percent.setValue(float(bundle["backtest_config"].stop_loss_pct) * 100.0)
+            self.override_drift.setChecked(False)
+            self.max_drift_score.setValue(float(manifest["drift_cutoff"]))
             self.symbol_model_label.setText(
                 f"{self.symbol} • MODEL {timeframe} • {bundle_sha[:8]}"
             )
@@ -442,8 +452,8 @@ class DemoHMI(QMainWindow):
             return
         experimental = self._experimental_thresholds()
         lot_changed = abs(self.fixed_lot.value() - float(self.bundle["backtest_config"].fixed_lot)) > 1e-9
-        if experimental or self.override_tp_sl.isChecked() or lot_changed or self.max_positions.value() != 1:
-            changed = "Thresholds, TP/SL and/or lot"
+        if experimental or self.override_tp_sl.isChecked() or self.override_drift.isChecked() or lot_changed or self.max_positions.value() != 1:
+            changed = "Thresholds, drift cutoff, TP/SL, lot and/or position limit"
             answer = QMessageBox.warning(
                 self,
                 "Experimental settings",
@@ -484,6 +494,8 @@ class DemoHMI(QMainWindow):
                 "--take-profit-percent", str(self.take_profit_percent.value()),
                 "--stop-loss-percent", str(self.stop_loss_percent.value()),
             ])
+        if self.override_drift.isChecked():
+            args.extend(["--drift-cutoff", str(self.max_drift_score.value())])
         if self.demo_orders.isChecked():
             args.append("--enable-demo-orders")
         self.process.setWorkingDirectory(str(self.root_dir))
@@ -566,8 +578,9 @@ class DemoHMI(QMainWindow):
             self._change_model_timeframe(completed_timeframe or self.bot_timeframe.currentText())
 
     def _set_controls_enabled(self, enabled: bool) -> None:
-        for widget in (self.bot_timeframe, self.training_bars, self.build_model_button, self.buy_threshold, self.sell_threshold, self.meta_threshold, self.max_spread, self.daily_loss, self.max_drawdown, self.override_tp_sl, self.fixed_lot, self.max_positions, self.bar_open_delay, self.demo_orders):
+        for widget in (self.bot_timeframe, self.training_bars, self.build_model_button, self.buy_threshold, self.sell_threshold, self.meta_threshold, self.max_spread, self.daily_loss, self.max_drawdown, self.override_drift, self.override_tp_sl, self.fixed_lot, self.max_positions, self.bar_open_delay, self.demo_orders):
             widget.setEnabled(enabled)
+        self.max_drift_score.setEnabled(enabled and self.override_drift.isChecked())
         self.take_profit_percent.setEnabled(enabled and self.override_tp_sl.isChecked())
         self.stop_loss_percent.setEnabled(enabled and self.override_tp_sl.isChecked())
 
@@ -608,6 +621,7 @@ class DemoHMI(QMainWindow):
                 ("buy_threshold", self.buy_threshold, float),
                 ("sell_threshold", self.sell_threshold, float),
                 ("meta_threshold", self.meta_threshold, float),
+                ("max_drift_score", self.max_drift_score, float),
             ))
         for key, widget, converter in numeric_settings:
             saved = self.ui_settings.value(key)
@@ -617,12 +631,17 @@ class DemoHMI(QMainWindow):
                 except (TypeError, ValueError):
                     pass
 
+        self.override_drift.setChecked(
+            saved_bundle_sha == str(self.manifest["bundle_sha256"])
+            and self.ui_settings.value("override_drift", False, type=bool)
+        )
         self.override_tp_sl.setChecked(
             self.ui_settings.value("override_tp_sl", False, type=bool)
         )
         self.demo_orders.setChecked(
             self.ui_settings.value("demo_orders", False, type=bool)
         )
+        self._update_drift_control(self.override_drift.isChecked())
         self._update_tp_sl_controls(self.override_tp_sl.isChecked())
         self._threshold_status()
 
@@ -637,6 +656,7 @@ class DemoHMI(QMainWindow):
             self.max_spread,
             self.daily_loss,
             self.max_drawdown,
+            self.max_drift_score,
             self.take_profit_percent,
             self.stop_loss_percent,
             self.bar_open_delay,
@@ -644,6 +664,7 @@ class DemoHMI(QMainWindow):
             self.max_positions,
         ):
             spin.valueChanged.connect(self._save_control_settings)
+        self.override_drift.toggled.connect(self._save_control_settings)
         self.override_tp_sl.toggled.connect(self._save_control_settings)
         self.demo_orders.toggled.connect(self._save_control_settings)
 
@@ -659,6 +680,8 @@ class DemoHMI(QMainWindow):
             "max_spread": self.max_spread.value(),
             "daily_loss": self.daily_loss.value(),
             "max_drawdown": self.max_drawdown.value(),
+            "override_drift": self.override_drift.isChecked(),
+            "max_drift_score": self.max_drift_score.value(),
             "override_tp_sl": self.override_tp_sl.isChecked(),
             "take_profit_percent": self.take_profit_percent.value(),
             "stop_loss_percent": self.stop_loss_percent.value(),
@@ -670,6 +693,10 @@ class DemoHMI(QMainWindow):
         for key, value in values.items():
             self.ui_settings.setValue(key, value)
         self.ui_settings.sync()
+
+    def _update_drift_control(self, checked: bool) -> None:
+        process_idle = self.process.state() == QProcess.ProcessState.NotRunning
+        self.max_drift_score.setEnabled(bool(checked) and process_idle)
 
     def _update_tp_sl_controls(self, checked: bool) -> None:
         process_idle = self.process.state() == QProcess.ProcessState.NotRunning

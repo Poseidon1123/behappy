@@ -338,7 +338,8 @@ python run_v51_demo_hmi.py
 
 The HMI can start/stop the guarded demo runner; enable or disable demo orders;
 adjust BUY, SELL and SELL-meta thresholds; adjust fixed lot; optionally override TP and SL as a
-percentage of entry; tune spread, daily-loss, drawdown and the short candle-open
+percentage of entry; optionally override the frozen model drift cutoff for DEMO experiments;
+tune spread, daily-loss, drawdown and the short candle-open
 data delay; inspect market charts/candles across M1–H4; and monitor open
 positions, the bot's 30-day deal history and persistent AI/execution events.
 

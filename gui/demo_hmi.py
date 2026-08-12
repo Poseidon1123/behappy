@@ -46,14 +46,25 @@ class DemoHMI(QMainWindow):
     def __init__(self, bundle_path: str | Path = "models/v51_shadow_bundle.joblib") -> None:
         super().__init__()
         self.root_dir = Path.cwd()
-        self.bundle_path = Path(bundle_path)
+        requested_bundle = Path(bundle_path)
+        generated_m15 = self.root_dir / "models" / "v51_shadow_m15.joblib"
+        default_m15 = Path("models/v51_shadow_bundle.joblib")
+        if requested_bundle == default_m15 and generated_m15.exists():
+            requested_bundle = generated_m15
+        self.bundle_path = requested_bundle
         self.bundle, self.manifest = load_verified_bundle(self.bundle_path)
         snapshot = self.bundle["snapshot_manifest"]
         self.symbol = str(snapshot["symbol"])
-        self.execution_timeframe = str(snapshot["timeframe"])
+        self.execution_timeframe = str(snapshot["timeframe"]).upper()
         self.bundle_paths = {self.execution_timeframe.upper(): self.bundle_path}
-        self.events_path = self.root_dir / "demo_logs" / "v51_demo_events.jsonl"
-        self.state_path = self.root_dir / "demo_state" / "v51_demo_state.json"
+        initial_suffix = "" if self.execution_timeframe == "M15" else f"_{self.execution_timeframe.lower()}"
+        self.events_path = self.root_dir / "demo_logs" / f"v51_demo{initial_suffix}_events.jsonl"
+        bundle_sha = str(self.manifest["bundle_sha256"])
+        self.state_path = (
+            self.root_dir
+            / "demo_state"
+            / f"v51_demo{initial_suffix}_{bundle_sha[:12]}_state.json"
+        )
         self.connector = MT5Connector()
         self.market = MarketData()
         self.process = QProcess(self)
@@ -100,7 +111,10 @@ class DemoHMI(QMainWindow):
         self.mode_status.setStyleSheet("color:#38bdf8; font-weight:800;")
         header.addWidget(title)
         header.addStretch()
-        self.symbol_model_label = QLabel(f"{self.symbol} • MODEL {self.execution_timeframe}")
+        self.symbol_model_label = QLabel(
+            f"{self.symbol} • MODEL {self.execution_timeframe} • "
+            f"{str(self.manifest['bundle_sha256'])[:8]}"
+        )
         header.addWidget(self.symbol_model_label)
         header.addWidget(self.mode_status)
         header.addWidget(self.account_status)
@@ -174,7 +188,10 @@ class DemoHMI(QMainWindow):
         self.bot_timeframe.setCurrentText(self.execution_timeframe)
         self.bot_timeframe.currentTextChanged.connect(self._change_model_timeframe)
         toolbar.addWidget(self.bot_timeframe)
-        self.model_readiness = QLabel(f"{self.execution_timeframe} MODEL READY")
+        self.model_readiness = QLabel(
+            f"{self.execution_timeframe} MODEL READY • "
+            f"DRIFT {float(self.manifest['drift_cutoff']):.4f}"
+        )
         self.model_readiness.setStyleSheet("color:#22c55e;font-weight:800;")
         toolbar.addWidget(self.model_readiness)
         toolbar.addWidget(QLabel("Training bars"))
@@ -349,14 +366,16 @@ class DemoHMI(QMainWindow):
             self._write_log(f"MT5 error: {exc}")
 
     def _bundle_candidate(self, timeframe: str) -> Path:
+        generated = self.root_dir / "models" / f"v51_shadow_{timeframe.lower()}.joblib"
+        # A timeframe-specific bundle is the output of BUILD SELECTED MODEL and
+        # must take precedence over the legacy M15 fallback and cached paths.
+        if generated.exists():
+            return generated
         if timeframe in self.bundle_paths:
             return self.bundle_paths[timeframe]
         if timeframe == "M15":
-            generated = self.root_dir / "models" / "v51_shadow_m15.joblib"
-            if generated.exists():
-                return generated
             return self.root_dir / "models" / "v51_shadow_bundle.joblib"
-        return self.root_dir / "models" / f"v51_shadow_{timeframe.lower()}.joblib"
+        return generated
 
     def _change_model_timeframe(self, timeframe: str) -> None:
         candidate = self._bundle_candidate(timeframe)
@@ -380,20 +399,33 @@ class DemoHMI(QMainWindow):
             self.execution_timeframe = timeframe
             suffix = "" if timeframe == "M15" else f"_{timeframe.lower()}"
             self.events_path = self.root_dir / "demo_logs" / f"v51_demo{suffix}_events.jsonl"
-            self.state_path = self.root_dir / "demo_state" / f"v51_demo{suffix}_state.json"
+            bundle_sha = str(manifest["bundle_sha256"])
+            self.state_path = (
+                self.root_dir
+                / "demo_state"
+                / f"v51_demo{suffix}_{bundle_sha[:12]}_state.json"
+            )
             self.buy_threshold.setValue(float(bundle["buy_threshold"]))
             self.sell_threshold.setValue(float(bundle["sell_threshold"]))
             self.meta_threshold.setValue(float(bundle["meta_gate_threshold"]))
             self.fixed_lot.setValue(float(bundle["backtest_config"].fixed_lot))
             self.take_profit_percent.setValue(float(bundle["backtest_config"].take_profit_pct) * 100.0)
             self.stop_loss_percent.setValue(float(bundle["backtest_config"].stop_loss_pct) * 100.0)
-            self.symbol_model_label.setText(f"{self.symbol} • MODEL {timeframe}")
-            self.model_readiness.setText(f"{timeframe} MODEL READY")
+            self.symbol_model_label.setText(
+                f"{self.symbol} • MODEL {timeframe} • {bundle_sha[:8]}"
+            )
+            drift_cutoff = float(manifest["drift_cutoff"])
+            self.model_readiness.setText(
+                f"{timeframe} MODEL READY • DRIFT {drift_cutoff:.4f}"
+            )
             self.model_readiness.setStyleSheet("color:#22c55e;font-weight:800;")
             self.start_button.setEnabled(True)
             self.chart_timeframe.setCurrentText(timeframe)
             self._threshold_status()
-            self._write_log(f"Loaded {timeframe} bundle: {candidate}")
+            self._write_log(
+                f"Loaded {timeframe} bundle {bundle_sha[:12]} with drift cutoff "
+                f"{drift_cutoff:.6f}: {candidate}"
+            )
             self.refresh_dashboard()
         except Exception as exc:
             self.model_readiness.setText(f"{timeframe} BUNDLE ERROR")
@@ -559,11 +591,8 @@ class DemoHMI(QMainWindow):
         if self.chart_timeframe.findText(chart_timeframe) >= 0:
             self.chart_timeframe.setCurrentText(chart_timeframe)
 
-        numeric_settings = (
+        numeric_settings = [
             ("training_bars", self.training_bars, int),
-            ("buy_threshold", self.buy_threshold, float),
-            ("sell_threshold", self.sell_threshold, float),
-            ("meta_threshold", self.meta_threshold, float),
             ("max_spread", self.max_spread, float),
             ("daily_loss", self.daily_loss, float),
             ("max_drawdown", self.max_drawdown, float),
@@ -572,7 +601,14 @@ class DemoHMI(QMainWindow):
             ("bar_open_delay", self.bar_open_delay, float),
             ("fixed_lot", self.fixed_lot, float),
             ("max_positions", self.max_positions, int),
-        )
+        ]
+        saved_bundle_sha = str(self.ui_settings.value("settings_bundle_sha", ""))
+        if saved_bundle_sha == str(self.manifest["bundle_sha256"]):
+            numeric_settings.extend((
+                ("buy_threshold", self.buy_threshold, float),
+                ("sell_threshold", self.sell_threshold, float),
+                ("meta_threshold", self.meta_threshold, float),
+            ))
         for key, widget, converter in numeric_settings:
             saved = self.ui_settings.value(key)
             if saved is not None:
@@ -613,6 +649,7 @@ class DemoHMI(QMainWindow):
 
     def _save_control_settings(self, *_args) -> None:
         values = {
+            "settings_bundle_sha": str(self.manifest["bundle_sha256"]),
             "chart_timeframe": self.chart_timeframe.currentText(),
             "bot_timeframe": self.bot_timeframe.currentText(),
             "training_bars": self.training_bars.value(),

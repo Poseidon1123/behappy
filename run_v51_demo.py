@@ -56,6 +56,12 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--sell-threshold", type=float, default=None)
     parser.add_argument("--meta-threshold", type=float, default=None)
     parser.add_argument(
+        "--drift-cutoff",
+        type=float,
+        default=None,
+        help="Experimental maximum live drift score; defaults to the frozen bundle cutoff",
+    )
+    parser.add_argument(
         "--fixed-lot",
         type=float,
         default=None,
@@ -86,6 +92,7 @@ def _signal(
     buy_threshold: float | None = None,
     sell_threshold: float | None = None,
     meta_threshold: float | None = None,
+    drift_cutoff: float | None = None,
 ) -> dict:
     raw = pd.concat([bundle["raw_context_tail"], frame], ignore_index=True)
     raw["time"] = pd.to_datetime(raw["time"], utc=True)
@@ -104,8 +111,18 @@ def _signal(
         return {"side": "HOLD", "reason": "FEATURES_NOT_READY", "bar_time": bar_time, "new_bars": new_bars}
     recent = featured.iloc[max(0, len(featured) - 1 - bundle["drift_recent_window"]):-1]
     score = drift_score(bundle["drift_reference"], recent)
-    if not math.isfinite(score) or score > bundle["drift_cutoff"]:
-        return {"side": "HOLD", "reason": "DRIFT_BLOCK", "bar_time": bar_time, "new_bars": new_bars, "drift_score": score}
+    active_drift_cutoff = float(
+        bundle["drift_cutoff"] if drift_cutoff is None else drift_cutoff
+    )
+    if not math.isfinite(score) or score > active_drift_cutoff:
+        return {
+            "side": "HOLD",
+            "reason": "DRIFT_BLOCK",
+            "bar_time": bar_time,
+            "new_bars": new_bars,
+            "drift_score": score,
+            "drift_cutoff": active_drift_cutoff,
+        }
     buy_p = float(bundle["buy_model"].predict_proba(pd.DataFrame([row[bundle["buy_features"]]]))[:, 1][0])
     sell_p = float(bundle["sell_model"].predict_proba(pd.DataFrame([row[bundle["sell_features"]]]))[:, 1][0])
     buy_limit = float(bundle["buy_threshold"] if buy_threshold is None else buy_threshold)
@@ -123,7 +140,7 @@ def _signal(
             reason = "SELL_META_PASS"
     elif side == "BUY":
         reason = "BUY_PRIMARY"
-    return {"side": side, "reason": reason, "bar_time": bar_time, "new_bars": new_bars, "buy_probability": buy_p, "sell_probability": sell_p, "meta_probability": meta_p, "drift_score": score, "atr14_abs": float(row["atr14_abs"])}
+    return {"side": side, "reason": reason, "bar_time": bar_time, "new_bars": new_bars, "buy_probability": buy_p, "sell_probability": sell_p, "meta_probability": meta_p, "drift_score": score, "drift_cutoff": active_drift_cutoff, "atr14_abs": float(row["atr14_abs"])}
 
 
 def _cycle(args: argparse.Namespace) -> dict:
@@ -148,6 +165,7 @@ def _cycle(args: argparse.Namespace) -> dict:
             buy_threshold=args.buy_threshold,
             sell_threshold=args.sell_threshold,
             meta_threshold=args.meta_threshold,
+            drift_cutoff=args.drift_cutoff,
         )
         positions = bot_positions(mt5, snapshot["symbol"])
         elapsed_by_ticket = {
@@ -234,7 +252,10 @@ def _cycle(args: argparse.Namespace) -> dict:
             "bundle_exit_policy": getattr(policy, "policy_id", None),
         }
         active_lot = float(cfg.fixed_lot if args.fixed_lot is None else args.fixed_lot)
-        outcome = {"account_login": int(account.login), "account_trade_mode": "DEMO", "orders_enabled": args.enable_demo_orders, "signal": signal, "execution": action, "thresholds": active_thresholds, "risk": active_risk, "safety": {"daily_loss_pct": state["daily_loss_pct"], "drawdown_pct": state["drawdown_pct"], "entry_block": equity_block, "max_positions": args.max_positions, "fixed_lot": active_lot, "frozen_lot": float(cfg.fixed_lot), "lot_override": args.fixed_lot is not None}}
+        active_drift_cutoff = float(
+            bundle["drift_cutoff"] if args.drift_cutoff is None else args.drift_cutoff
+        )
+        outcome = {"account_login": int(account.login), "account_trade_mode": "DEMO", "orders_enabled": args.enable_demo_orders, "signal": signal, "execution": action, "thresholds": active_thresholds, "risk": active_risk, "drift": {"cutoff": active_drift_cutoff, "frozen_cutoff": float(bundle["drift_cutoff"]), "override": args.drift_cutoff is not None}, "safety": {"daily_loss_pct": state["daily_loss_pct"], "drawdown_pct": state["drawdown_pct"], "entry_block": equity_block, "max_positions": args.max_positions, "fixed_lot": active_lot, "frozen_lot": float(cfg.fixed_lot), "lot_override": args.fixed_lot is not None}}
         append_demo_event(args.events, outcome)
         return outcome
 
@@ -247,6 +268,8 @@ def main() -> None:
         raise ValueError("--bar-open-delay-seconds must be between 0 and 30")
     if args.fixed_lot is not None and not 0.01 <= args.fixed_lot <= 100.0:
         raise ValueError("--fixed-lot must be between 0.01 and 100.0")
+    if args.drift_cutoff is not None and not 0.01 <= args.drift_cutoff <= 100.0:
+        raise ValueError("--drift-cutoff must be between 0.01 and 100.0")
     if not 1 <= args.max_positions <= 10:
         raise ValueError("--max-positions must be between 1 and 10")
     if (args.take_profit_percent is None) != (args.stop_loss_percent is None):

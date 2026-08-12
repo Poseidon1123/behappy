@@ -76,6 +76,8 @@ class DemoHMI(QMainWindow):
         self.setStyleSheet(APP_STYLE)
         pg.setConfigOptions(antialias=True)
         self._build_ui()
+        self._restore_control_settings()
+        self._connect_control_persistence()
         self._connect_mt5()
 
         self.refresh_timer = QTimer(self)
@@ -339,8 +341,6 @@ class DemoHMI(QMainWindow):
             else:
                 self.account_status.setText("● REAL ACCOUNT — EXECUTION BLOCKED")
                 self.account_status.setStyleSheet("color:#ef4444;font-weight:900;")
-                self.demo_orders.setChecked(False)
-                self.demo_orders.setEnabled(False)
             self._write_log("Connected to MetaTrader 5")
             self.refresh_dashboard()
         except Exception as exc:
@@ -539,6 +539,101 @@ class DemoHMI(QMainWindow):
         self.take_profit_percent.setEnabled(enabled and self.override_tp_sl.isChecked())
         self.stop_loss_percent.setEnabled(enabled and self.override_tp_sl.isChecked())
 
+    def _restore_control_settings(self) -> None:
+        """Restore the last HMI choices after every widget has been created."""
+        geometry = self.ui_settings.value("window_geometry")
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+
+        bot_timeframe = str(
+            self.ui_settings.value("bot_timeframe", self.bot_timeframe.currentText())
+        ).upper()
+        if self.bot_timeframe.findText(bot_timeframe) >= 0:
+            self.bot_timeframe.setCurrentText(bot_timeframe)
+
+        # Loading a bot bundle also aligns the chart to that timeframe, so the
+        # independently saved chart choice must be restored afterwards.
+        chart_timeframe = str(
+            self.ui_settings.value("chart_timeframe", self.chart_timeframe.currentText())
+        ).upper()
+        if self.chart_timeframe.findText(chart_timeframe) >= 0:
+            self.chart_timeframe.setCurrentText(chart_timeframe)
+
+        numeric_settings = (
+            ("training_bars", self.training_bars, int),
+            ("buy_threshold", self.buy_threshold, float),
+            ("sell_threshold", self.sell_threshold, float),
+            ("meta_threshold", self.meta_threshold, float),
+            ("max_spread", self.max_spread, float),
+            ("daily_loss", self.daily_loss, float),
+            ("max_drawdown", self.max_drawdown, float),
+            ("take_profit_percent", self.take_profit_percent, float),
+            ("stop_loss_percent", self.stop_loss_percent, float),
+            ("bar_open_delay", self.bar_open_delay, float),
+            ("fixed_lot", self.fixed_lot, float),
+            ("max_positions", self.max_positions, int),
+        )
+        for key, widget, converter in numeric_settings:
+            saved = self.ui_settings.value(key)
+            if saved is not None:
+                try:
+                    widget.setValue(converter(saved))
+                except (TypeError, ValueError):
+                    pass
+
+        self.override_tp_sl.setChecked(
+            self.ui_settings.value("override_tp_sl", False, type=bool)
+        )
+        self.demo_orders.setChecked(
+            self.ui_settings.value("demo_orders", False, type=bool)
+        )
+        self._update_tp_sl_controls(self.override_tp_sl.isChecked())
+        self._threshold_status()
+
+    def _connect_control_persistence(self) -> None:
+        for combo in (self.chart_timeframe, self.bot_timeframe):
+            combo.currentTextChanged.connect(self._save_control_settings)
+        for spin in (
+            self.training_bars,
+            self.buy_threshold,
+            self.sell_threshold,
+            self.meta_threshold,
+            self.max_spread,
+            self.daily_loss,
+            self.max_drawdown,
+            self.take_profit_percent,
+            self.stop_loss_percent,
+            self.bar_open_delay,
+            self.fixed_lot,
+            self.max_positions,
+        ):
+            spin.valueChanged.connect(self._save_control_settings)
+        self.override_tp_sl.toggled.connect(self._save_control_settings)
+        self.demo_orders.toggled.connect(self._save_control_settings)
+
+    def _save_control_settings(self, *_args) -> None:
+        values = {
+            "chart_timeframe": self.chart_timeframe.currentText(),
+            "bot_timeframe": self.bot_timeframe.currentText(),
+            "training_bars": self.training_bars.value(),
+            "buy_threshold": self.buy_threshold.value(),
+            "sell_threshold": self.sell_threshold.value(),
+            "meta_threshold": self.meta_threshold.value(),
+            "max_spread": self.max_spread.value(),
+            "daily_loss": self.daily_loss.value(),
+            "max_drawdown": self.max_drawdown.value(),
+            "override_tp_sl": self.override_tp_sl.isChecked(),
+            "take_profit_percent": self.take_profit_percent.value(),
+            "stop_loss_percent": self.stop_loss_percent.value(),
+            "bar_open_delay": self.bar_open_delay.value(),
+            "fixed_lot": self.fixed_lot.value(),
+            "max_positions": self.max_positions.value(),
+            "demo_orders": self.demo_orders.isChecked(),
+        }
+        for key, value in values.items():
+            self.ui_settings.setValue(key, value)
+        self.ui_settings.sync()
+
     def _update_tp_sl_controls(self, checked: bool) -> None:
         process_idle = self.process.state() == QProcess.ProcessState.NotRunning
         self.take_profit_percent.setEnabled(bool(checked) and process_idle)
@@ -664,7 +759,10 @@ class DemoHMI(QMainWindow):
         self.log.append(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        self._save_control_settings()
+        self.ui_settings.setValue("window_geometry", self.saveGeometry())
         self.ui_settings.setValue("main_splitter_state", self.main_splitter.saveState())
+        self.ui_settings.sync()
         self.stop_bot()
         self.connector.disconnect()
         event.accept()

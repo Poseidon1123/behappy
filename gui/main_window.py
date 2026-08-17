@@ -16,8 +16,8 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMainWindow,
-    QProgressBar,
     QPushButton,
+    QProgressBar,
     QSpinBox,
     QSplitter,
     QTableWidget,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ai.predictor import AIPredictor
 from mt5.market_data import MarketData
 from mt5.mt5_connector import MT5Connector
 
@@ -55,11 +56,12 @@ class MainWindow(QMainWindow):
 
         self.symbol = str(trading.get("symbol", "XAUUSD.sc"))
         self.timeframe = str(trading.get("timeframe", "M15"))
-        self.bars = int(trading.get("bars", 100))
+        self.bars = int(trading.get("bars", 300))
         self.risk_cfg = risk
 
         self.connector = MT5Connector()
         self.market = MarketData()
+        self.predictor = AIPredictor()
         self.bot_running = False
 
         self.setWindowTitle("AI MT5 Trading Bot - HMI")
@@ -69,6 +71,7 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._connect_mt5()
+        self._update_model_status()
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_data)
@@ -85,11 +88,13 @@ class MainWindow(QMainWindow):
         title = QLabel("AI MT5 TRADING BOT")
         title.setStyleSheet("font-size: 24px; font-weight: 800;")
         self.connection_label = QLabel("● MT5 DISCONNECTED")
+        self.model_label = QLabel("● AI MODEL NOT TRAINED")
         self.bot_status_label = QLabel("BOT STOPPED")
         self.symbol_label = QLabel(f"{self.symbol}  •  {self.timeframe}")
         header.addWidget(title)
         header.addStretch()
         header.addWidget(self.symbol_label)
+        header.addWidget(self.model_label)
         header.addWidget(self.connection_label)
         header.addWidget(self.bot_status_label)
         root.addLayout(header)
@@ -101,8 +106,14 @@ class MainWindow(QMainWindow):
         self.bid_value = self._metric_card("Bid")
         self.ask_value = self._metric_card("Ask")
         self.spread_value = self._metric_card("Spread")
-        cards = [self.balance_value, self.equity_value, self.profit_value,
-                 self.bid_value, self.ask_value, self.spread_value]
+        cards = [
+            self.balance_value,
+            self.equity_value,
+            self.profit_value,
+            self.bid_value,
+            self.ask_value,
+            self.spread_value,
+        ]
         for i, (card, _) in enumerate(cards):
             metrics.addWidget(card, 0, i)
         root.addLayout(metrics)
@@ -121,7 +132,9 @@ class MainWindow(QMainWindow):
 
     def _metric_card(self, title: str) -> tuple[QFrame, QLabel]:
         frame = QFrame()
-        frame.setStyleSheet("QFrame { background:#111827; border:1px solid #263247; border-radius:10px; }")
+        frame.setStyleSheet(
+            "QFrame { background:#111827; border:1px solid #263247; border-radius:10px; }"
+        )
         layout = QVBoxLayout(frame)
         caption = QLabel(title)
         caption.setStyleSheet("color:#94a3b8; font-size:12px; border:0;")
@@ -134,6 +147,7 @@ class MainWindow(QMainWindow):
     def _build_market_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
+
         chart_group = QGroupBox("Realtime price chart")
         chart_layout = QVBoxLayout(chart_group)
         self.chart = pg.PlotWidget()
@@ -160,31 +174,58 @@ class MainWindow(QMainWindow):
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
-        ai_group = QGroupBox("AI signal preview")
+        ai_group = QGroupBox("AI signal")
         ai_layout = QVBoxLayout(ai_group)
-        note = QLabel("Preview heuristic only — real AI model not connected yet")
-        note.setWordWrap(True)
-        note.setStyleSheet("color:#f59e0b;")
-        ai_layout.addWidget(note)
-        self.buy_bar = self._probability_row(ai_layout, "BUY")
-        self.sell_bar = self._probability_row(ai_layout, "SELL")
-        self.hold_bar = self._probability_row(ai_layout, "HOLD")
+        self.ai_note = QLabel(
+            "Train models with: python train_ai.py\n"
+            "BUY/SELL = probability of TP being reached before SL."
+        )
+        self.ai_note.setWordWrap(True)
+        self.ai_note.setStyleSheet("color:#94a3b8;")
+        ai_layout.addWidget(self.ai_note)
+
+        self.buy_bar = self._probability_row(ai_layout, "BUY win probability")
+        self.sell_bar = self._probability_row(ai_layout, "SELL win probability")
+        self.hold_bar = self._probability_row(ai_layout, "HOLD / no-edge")
+
         self.ai_decision = QLabel("Decision: HOLD")
         self.ai_decision.setAlignment(Qt.AlignCenter)
-        self.ai_decision.setStyleSheet("font-size:20px; font-weight:800; padding:10px;")
+        self.ai_decision.setStyleSheet(
+            "font-size:20px; font-weight:800; padding:10px;"
+        )
         ai_layout.addWidget(self.ai_decision)
+
+        self.reload_model_button = QPushButton("RELOAD AI MODEL")
+        self.reload_model_button.clicked.connect(self.reload_ai_model)
+        ai_layout.addWidget(self.reload_model_button)
         layout.addWidget(ai_group)
 
         risk_group = QGroupBox("Risk settings")
         form = QFormLayout(risk_group)
-        self.risk_per_trade = self._double_spin(0.05, 5.0, self.risk_cfg.get("risk_per_trade_pct", 0.5), "%")
-        self.max_positions = QSpinBox(); self.max_positions.setRange(1, 20); self.max_positions.setValue(int(self.risk_cfg.get("max_positions", 2)))
-        self.daily_loss = self._double_spin(0.1, 20.0, self.risk_cfg.get("max_daily_loss_pct", 2.0), "%")
-        self.max_drawdown = self._double_spin(1.0, 50.0, self.risk_cfg.get("max_drawdown_pct", 10.0), "%")
-        self.sl_pct = self._double_spin(0.01, 10.0, self.risk_cfg.get("stop_loss_pct", 0.3), "%")
-        self.tp_pct = self._double_spin(0.01, 20.0, self.risk_cfg.get("take_profit_pct", 0.6), "%")
-        self.buy_threshold = self._double_spin(0.50, 0.99, self.risk_cfg.get("buy_threshold", 0.72), "")
-        self.sell_threshold = self._double_spin(0.50, 0.99, self.risk_cfg.get("sell_threshold", 0.72), "")
+        self.risk_per_trade = self._double_spin(
+            0.05, 5.0, self.risk_cfg.get("risk_per_trade_pct", 0.5), "%"
+        )
+        self.max_positions = QSpinBox()
+        self.max_positions.setRange(1, 20)
+        self.max_positions.setValue(int(self.risk_cfg.get("max_positions", 2)))
+        self.daily_loss = self._double_spin(
+            0.1, 20.0, self.risk_cfg.get("max_daily_loss_pct", 2.0), "%"
+        )
+        self.max_drawdown = self._double_spin(
+            1.0, 50.0, self.risk_cfg.get("max_drawdown_pct", 10.0), "%"
+        )
+        self.sl_pct = self._double_spin(
+            0.01, 10.0, self.risk_cfg.get("stop_loss_pct", 0.3), "%"
+        )
+        self.tp_pct = self._double_spin(
+            0.01, 20.0, self.risk_cfg.get("take_profit_pct", 0.6), "%"
+        )
+        self.buy_threshold = self._double_spin(
+            0.50, 0.99, self.risk_cfg.get("buy_threshold", 0.72), ""
+        )
+        self.sell_threshold = self._double_spin(
+            0.50, 0.99, self.risk_cfg.get("sell_threshold", 0.72), ""
+        )
         form.addRow("Risk / trade", self.risk_per_trade)
         form.addRow("Max positions", self.max_positions)
         form.addRow("Max daily loss", self.daily_loss)
@@ -221,7 +262,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(bar)
         return bar
 
-    def _double_spin(self, minimum: float, maximum: float, value: float, suffix: str) -> QDoubleSpinBox:
+    def _double_spin(
+        self,
+        minimum: float,
+        maximum: float,
+        value: float,
+        suffix: str,
+    ) -> QDoubleSpinBox:
         spin = QDoubleSpinBox()
         spin.setRange(minimum, maximum)
         spin.setDecimals(2)
@@ -263,6 +310,33 @@ class MainWindow(QMainWindow):
             self.connection_label.setStyleSheet("color:#ef4444; font-weight:700;")
             self._log(f"MT5 connection error: {exc}")
 
+    def _update_model_status(self) -> None:
+        if self.predictor.ready:
+            self.model_label.setText("● AI MODEL READY")
+            self.model_label.setStyleSheet("color:#22c55e; font-weight:700;")
+            self.ai_note.setText(
+                "Real BUY/SELL models loaded. Probabilities are inferred from the latest closed M15 data."
+            )
+        else:
+            self.model_label.setText("● AI MODEL NOT TRAINED")
+            self.model_label.setStyleSheet("color:#f59e0b; font-weight:700;")
+            self.ai_note.setText(
+                "No trained model found. Run: python train_ai.py\n"
+                "Then click RELOAD AI MODEL or restart the HMI."
+            )
+
+    def reload_ai_model(self) -> None:
+        try:
+            loaded = self.predictor.reload()
+            self._update_model_status()
+            if loaded:
+                self._log("AI models reloaded successfully")
+                self.refresh_data()
+            else:
+                self._log("AI model files not found. Run python train_ai.py first.")
+        except Exception as exc:
+            self._log(f"AI model reload error: {exc}")
+
     def refresh_data(self) -> None:
         if not self.connector.connected:
             return
@@ -280,13 +354,13 @@ class MainWindow(QMainWindow):
             df = self.market.get_bars(
                 symbol=self.symbol,
                 timeframe=self.timeframe,
-                count=max(60, min(self.bars, 300)),
+                count=max(120, min(self.bars, 500)),
                 include_current_bar=False,
             )
             self._update_chart(df)
             self._update_candle_table(df.tail(12))
             self._update_positions()
-            self._update_ai_preview(df)
+            self._update_ai_signal(df)
         except Exception as exc:
             self._log(f"Refresh error: {exc}")
 
@@ -296,14 +370,21 @@ class MainWindow(QMainWindow):
         y = recent["close"].astype(float).to_numpy()
         self.price_curve.setData(x, y)
         if len(y):
-            self.chart.setTitle(f"{self.symbol} {self.timeframe}  |  Last close: {y[-1]:.5f}")
+            self.chart.setTitle(
+                f"{self.symbol} {self.timeframe}  |  Last close: {y[-1]:.5f}"
+            )
 
     def _update_candle_table(self, df) -> None:
         self.candle_table.setRowCount(len(df))
         for r, (_, row) in enumerate(df.iterrows()):
             values = [
-                str(row["time"]), row["open"], row["high"], row["low"],
-                row["close"], row["tick_volume"], row["spread"],
+                str(row["time"]),
+                row["open"],
+                row["high"],
+                row["low"],
+                row["close"],
+                row["tick_volume"],
+                row["spread"],
             ]
             for c, value in enumerate(values):
                 self.candle_table.setItem(r, c, QTableWidgetItem(str(value)))
@@ -315,36 +396,51 @@ class MainWindow(QMainWindow):
         self.positions_table.setRowCount(len(positions))
         for r, pos in enumerate(positions):
             side = "BUY" if pos.type == mt5.POSITION_TYPE_BUY else "SELL"
-            values = [pos.ticket, pos.symbol, side, pos.volume, pos.price_open,
-                      pos.price_current, pos.sl, pos.tp, pos.profit]
+            values = [
+                pos.ticket,
+                pos.symbol,
+                side,
+                pos.volume,
+                pos.price_open,
+                pos.price_current,
+                pos.sl,
+                pos.tp,
+                pos.profit,
+            ]
             for c, value in enumerate(values):
                 self.positions_table.setItem(r, c, QTableWidgetItem(str(value)))
 
-    def _update_ai_preview(self, df) -> None:
-        closes = df["close"].astype(float)
-        if len(closes) < 20:
-            return
-        fast = closes.tail(5).mean()
-        slow = closes.tail(20).mean()
-        volatility = max(closes.tail(20).std(), 1e-9)
-        score = np.clip((fast - slow) / volatility, -2.0, 2.0)
-        buy = 1.0 / (1.0 + np.exp(-2.0 * score))
-        sell = 1.0 - buy
-        confidence = abs(buy - sell)
-        hold = max(0.0, 0.55 - confidence)
-        total = buy + sell + hold
-        buy, sell, hold = buy / total, sell / total, hold / total
+    def _update_ai_signal(self, df) -> None:
+        result = self.predictor.predict(df)
+        buy = float(result["buy_probability"])
+        sell = float(result["sell_probability"])
+        hold = float(result["hold_probability"])
+        status = str(result["status"])
 
         self.buy_bar.setValue(round(buy * 100))
         self.sell_bar.setValue(round(sell * 100))
         self.hold_bar.setValue(round(hold * 100))
 
         decision = "HOLD"
-        if buy >= self.buy_threshold.value():
-            decision = "BUY"
-        elif sell >= self.sell_threshold.value():
-            decision = "SELL"
+        if status == "READY":
+            buy_ok = buy >= self.buy_threshold.value()
+            sell_ok = sell >= self.sell_threshold.value()
+
+            if buy_ok and not sell_ok:
+                decision = "BUY"
+            elif sell_ok and not buy_ok:
+                decision = "SELL"
+            elif buy_ok and sell_ok:
+                # When both models are confident, only act on a clear advantage.
+                if buy - sell >= 0.08:
+                    decision = "BUY"
+                elif sell - buy >= 0.08:
+                    decision = "SELL"
+
         self.ai_decision.setText(f"Decision: {decision}")
+
+        if status != "READY":
+            self.ai_decision.setText(f"Decision: HOLD  |  {status}")
 
     def start_bot(self) -> None:
         self.bot_running = True

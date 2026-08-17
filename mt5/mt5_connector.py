@@ -7,8 +7,10 @@ from typing import Any
 import MetaTrader5 as mt5
 from dotenv import load_dotenv
 
+from demo.recovery import TransientMT5Error
 
-class MT5ConnectionError(RuntimeError):
+
+class MT5ConnectionError(TransientMT5Error):
     pass
 
 

@@ -720,11 +720,17 @@ class DemoHMI(QMainWindow):
 
     def refresh_dashboard(self) -> None:
         if not self.connector.connected:
+            self._connect_mt5()
             return
         try:
             account = mt5.account_info()
+            terminal = mt5.terminal_info()
             tick = mt5.symbol_info_tick(self.symbol)
             info = mt5.symbol_info(self.symbol)
+            if account is None or terminal is None:
+                raise RuntimeError(f"MT5 account/terminal unavailable: {mt5.last_error()}")
+            if not bool(getattr(terminal, "connected", True)):
+                raise RuntimeError("MT5 terminal is offline")
             if account is not None:
                 self.balance[1].setText(f"{account.balance:.2f} {account.currency}")
                 self.equity[1].setText(f"{account.equity:.2f} {account.currency}")
@@ -739,6 +745,9 @@ class DemoHMI(QMainWindow):
             self._update_deals()
             self._update_events()
         except Exception as exc:
+            self.connector.disconnect()
+            self.account_status.setText("● MT5 RECONNECTING")
+            self.account_status.setStyleSheet("color:#f59e0b;font-weight:900;")
             self._write_log(f"Refresh error: {exc}")
 
     def _update_market(self, bars) -> None:
@@ -817,6 +826,15 @@ class DemoHMI(QMainWindow):
     def _read_process_output(self) -> None:
         text = bytes(self.process.readAllStandardOutput()).decode(errors="replace").strip()
         if text:
+            if '"status": "MT5_RECONNECTING"' in text:
+                self.bot_status.setText("● BOT WAITING FOR MT5")
+                self.bot_status.setStyleSheet("color:#f59e0b;font-weight:900;")
+            elif '"account_trade_mode": "DEMO"' in text:
+                self.bot_status.setText("● BOT RUNNING")
+                self.bot_status.setStyleSheet("color:#22c55e;font-weight:800;")
+            elif '"status": "ORDER_STATUS_UNKNOWN"' in text:
+                self.bot_status.setText("● BOT VERIFYING ORDER")
+                self.bot_status.setStyleSheet("color:#f59e0b;font-weight:900;")
             self._write_log(text[-1500:])
 
     def _write_log(self, message: str) -> None:

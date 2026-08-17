@@ -4,8 +4,9 @@ import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from demo.executor import _send_checked
+from demo.executor import BrokerUnavailableError, _send_checked
 from demo.lock import SingleInstanceError, single_instance_lock
+from demo.recovery import OrderStatusUnknownError
 from demo.safety import DemoSafetyError, SafetyLimits, refresh_equity_limits, require_demo_account, require_position_mode, require_spread, require_volume
 
 
@@ -79,6 +80,36 @@ class DemoSafetyTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             _send_checked(RejectedMT5, {"symbol": "XAUUSD.sc"})
         self.assertEqual(RejectedMT5.send_calls, 0)
+
+    def test_missing_order_check_is_recoverable(self) -> None:
+        class OfflineMT5(FakeMT5):
+            @staticmethod
+            def order_check(request):
+                return None
+
+            @staticmethod
+            def last_error():
+                return (-10005, "IPC timeout")
+
+        with self.assertRaises(BrokerUnavailableError):
+            _send_checked(OfflineMT5, {"symbol": "XAUUSD.sc"})
+
+    def test_missing_order_send_result_is_treated_as_unknown(self) -> None:
+        class OfflineAfterSendMT5(FakeMT5):
+            @staticmethod
+            def order_check(request):
+                return SimpleNamespace(retcode=0, comment="Done")
+
+            @staticmethod
+            def order_send(request):
+                return None
+
+            @staticmethod
+            def last_error():
+                return (-10005, "IPC timeout")
+
+        with self.assertRaises(OrderStatusUnknownError):
+            _send_checked(OfflineAfterSendMT5, {"symbol": "XAUUSD.sc"})
 
     def test_second_runner_is_blocked(self) -> None:
         from tempfile import TemporaryDirectory

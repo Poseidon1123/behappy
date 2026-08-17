@@ -13,6 +13,7 @@ from backtest.meta_labeling_v41 import _meta_vector
 from backtest.nested_robust import _outer_decision
 from data.feature_engineering import build_features
 from demo.executor import (
+    BrokerUnavailableError,
     append_demo_event,
     bot_positions,
     close_demo_position,
@@ -21,6 +22,7 @@ from demo.executor import (
     save_demo_state,
 )
 from demo.lock import SingleInstanceError, single_instance_lock
+from demo.recovery import OrderStatusUnknownError, TransientMT5Error
 from demo.safety import DemoSafetyError, SafetyLimits, refresh_equity_limits, require_demo_account, require_position_mode, require_spread, require_volume
 from shadow.engine import load_verified_bundle
 
@@ -80,6 +82,12 @@ def _arguments() -> argparse.Namespace:
         help="Experimental fixed SL distance in percent of entry; overrides the bundle exit policy",
     )
     parser.add_argument("--enable-demo-orders", action="store_true")
+    parser.add_argument(
+        "--connection-retry-seconds",
+        type=float,
+        default=15.0,
+        help="Seconds between MT5 reconnect attempts after a temporary connection failure",
+    )
     parser.add_argument("--once", action="store_true")
     return parser.parse_args()
 
@@ -146,7 +154,7 @@ def _signal(
 def _cycle(args: argparse.Namespace) -> dict:
     import MetaTrader5 as mt5
     from mt5.market_data import MarketData
-    from mt5.mt5_connector import MT5Connector
+    from mt5.mt5_connector import MT5ConnectionError, MT5Connector
 
     bundle, manifest = load_verified_bundle(args.bundle)
     state = load_demo_state(args.state, manifest["bundle_sha256"])
@@ -154,6 +162,12 @@ def _cycle(args: argparse.Namespace) -> dict:
     limits = SafetyLimits(args.max_daily_loss_pct, args.max_drawdown_pct, args.max_spread_points)
     with MT5Connector() as connector:
         account, terminal = mt5.account_info(), mt5.terminal_info()
+        if account is None or terminal is None:
+            raise MT5ConnectionError(
+                f"MT5 account/terminal information is temporarily unavailable: {mt5.last_error()}"
+            )
+        if not bool(getattr(terminal, "connected", True)):
+            raise MT5ConnectionError("MT5 terminal is offline")
         require_demo_account(mt5, account, terminal)
         require_position_mode(mt5, account, args.max_positions)
         equity_block = refresh_equity_limits(state, equity=float(account.equity), limits=limits)
@@ -199,13 +213,15 @@ def _cycle(args: argparse.Namespace) -> dict:
             current_bot_positions = bot_positions(mt5, snapshot["symbol"])
             all_positions = mt5.positions_get()
             if all_positions is None:
-                raise RuntimeError(f"positions_get failed: {mt5.last_error()}")
+                raise BrokerUnavailableError(f"positions_get failed: {mt5.last_error()}")
             if len(current_bot_positions) >= args.max_positions or len(all_positions) >= args.max_positions:
                 action = {"action": "MAX_POSITIONS_REACHED", "open_bot_positions": len(current_bot_positions), "open_account_positions": len(all_positions), "max_positions": args.max_positions, "position_management": position_management}
             else:
                 tick, info = mt5.symbol_info_tick(snapshot["symbol"]), mt5.symbol_info(snapshot["symbol"])
                 if tick is None or info is None:
-                    raise RuntimeError(f"Could not read {snapshot['symbol']} tick/info")
+                    raise BrokerUnavailableError(
+                        f"Could not read {snapshot['symbol']} tick/info: {mt5.last_error()}"
+                    )
                 spread = require_spread(tick, float(info.point), args.max_spread_points)
                 active_lot = require_volume(
                     float(cfg.fixed_lot if args.fixed_lot is None else args.fixed_lot),
@@ -270,6 +286,8 @@ def main() -> None:
         raise ValueError("--fixed-lot must be between 0.01 and 100.0")
     if args.drift_cutoff is not None and not 0.01 <= args.drift_cutoff <= 100.0:
         raise ValueError("--drift-cutoff must be between 0.01 and 100.0")
+    if not 1.0 <= args.connection_retry_seconds <= 300.0:
+        raise ValueError("--connection-retry-seconds must be between 1 and 300")
     if not 1 <= args.max_positions <= 10:
         raise ValueError("--max-positions must be between 1 and 10")
     if (args.take_profit_percent is None) != (args.stop_loss_percent is None):
@@ -289,22 +307,65 @@ def main() -> None:
     lock_path = args.state.with_suffix(args.state.suffix + ".lock")
     try:
         with single_instance_lock(lock_path):
+            reconnecting = False
             while True:
                 if not args.once:
-                    now = time.time()
-                    next_open = (math.floor(now / period_seconds) + 1) * period_seconds
-                    wait_seconds = max(0.0, next_open + args.bar_open_delay_seconds - now)
-                    print(
-                        f"Waiting {wait_seconds:.1f}s for next {timeframe} candle open "
-                        f"(+{args.bar_open_delay_seconds:g}s data delay)",
-                        flush=True,
-                    )
+                    if reconnecting:
+                        wait_seconds = args.connection_retry_seconds
+                        print(
+                            f"MT5 unavailable; retrying connection in {wait_seconds:g}s",
+                            flush=True,
+                        )
+                    else:
+                        now = time.time()
+                        next_open = (math.floor(now / period_seconds) + 1) * period_seconds
+                        wait_seconds = max(0.0, next_open + args.bar_open_delay_seconds - now)
+                        print(
+                            f"Waiting {wait_seconds:.1f}s for next {timeframe} candle open "
+                            f"(+{args.bar_open_delay_seconds:g}s data delay)",
+                            flush=True,
+                        )
                     time.sleep(wait_seconds)
                 try:
                     print(json.dumps(_cycle(args), indent=2, default=str))
+                    reconnecting = False
                 except DemoSafetyError as exc:
                     print(json.dumps({"status": "SAFETY_BLOCK", "reason": str(exc)}, indent=2))
                     raise SystemExit(2) from exc
+                except OrderStatusUnknownError as exc:
+                    print(
+                        json.dumps(
+                            {
+                                "status": "ORDER_STATUS_UNKNOWN",
+                                "reason": str(exc),
+                                "action": "NO_RETRY_UNTIL_NEXT_CANDLE",
+                            },
+                            indent=2,
+                        ),
+                        flush=True,
+                    )
+                    # Replaying an unconfirmed order immediately could duplicate it.
+                    # Reconcile positions at the next normal candle instead.
+                    reconnecting = False
+                    if args.once:
+                        raise SystemExit(4) from exc
+                    continue
+                except TransientMT5Error as exc:
+                    print(
+                        json.dumps(
+                            {
+                                "status": "MT5_RECONNECTING",
+                                "reason": str(exc),
+                                "retry_after_seconds": args.connection_retry_seconds,
+                            },
+                            indent=2,
+                        ),
+                        flush=True,
+                    )
+                    reconnecting = True
+                    if args.once:
+                        raise SystemExit(4) from exc
+                    continue
                 if args.once:
                     break
     except SingleInstanceError as exc:
